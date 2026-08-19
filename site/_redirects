@@ -1,0 +1,9 @@
+# ress.sh — a redirector, and nothing else.
+#
+# There is no storage here, no account, and no copy of anyone's profile. A
+# ress.sh link is a shorter way to write a GitHub URL, and `ress apply` resolves
+# it locally before it makes any request at all.
+
+/gh/*         https://github.com/:splat                                                      302
+/bootstrap    https://raw.githubusercontent.com/tsouth89/omarchy-resurrect/main/bin/resurrect-bootstrap  302
+/repo         https://github.com/tsouth89/omarchy-resurrect                                  302

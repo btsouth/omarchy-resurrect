@@ -1,0 +1,58 @@
+# Resurrect — default capture list.
+#
+# One path per line, relative to $HOME. Directories are captured recursively.
+# Add your own in ~/.config/ress/include (same format); remove
+# things with ~/.config/ress/exclude (glob patterns).
+#
+# Everything here is plain configuration. Credentials, tokens and keys are
+# deliberately absent — those only travel through the encrypted `secrets`
+# category, which is off until you turn it on.
+
+# ---- shell -----------------------------------------------------------------
+.bashrc
+.bash_profile
+.bash_logout
+.profile
+.inputrc
+.XCompose
+
+# ---- window manager --------------------------------------------------------
+.config/hypr
+.config/uwsm
+.config/xdg-desktop-portal
+
+# ---- terminals -------------------------------------------------------------
+.config/alacritty
+.config/ghostty
+.config/kitty
+.config/foot
+.config/wezterm
+
+# ---- editors & dev ---------------------------------------------------------
+.config/nvim
+.config/helix
+.config/zed
+.config/lazygit
+.config/tmux
+.config/git
+.config/mise
+.config/starship.toml
+.config/direnv
+.config/ripgrep
+.config/bat
+
+# ---- desktop ---------------------------------------------------------------
+.config/btop
+.config/imv
+.config/mpv
+.config/nautilus
+.config/gtk-3.0
+.config/gtk-4.0
+.config/fontconfig
+.config/mimeapps.list
+.config/user-dirs.dirs
+.config/autostart
+.config/systemd/user
+
+# ---- your own scripts ------------------------------------------------------
+.local/bin

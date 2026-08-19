@@ -1,0 +1,1455 @@
+#!/bin/bash
+#
+# Resurrect — capture an Omarchy machine, replay it onto a fresh one.
+#
+# This is the whole engine. The Quickshell panel is a face on top of it; every
+# button there is one of these subcommands with --porcelain. That split is
+# deliberate: a backup tool you can only drive from a running desktop is no use
+# on the machine you are trying to rebuild.
+
+set -euo pipefail
+
+VERSION="1.0.0"
+SCHEMA=1
+
+# ---------------------------------------------------------------- locations
+
+self_dir() {
+  local src="${BASH_SOURCE[0]}"
+  while [[ -L $src ]]; do
+    local dir
+    dir=$(cd -P "$(dirname "$src")" && pwd)
+    src=$(readlink "$src")
+    [[ $src == /* ]] || src="$dir/$src"
+  done
+  cd -P "$(dirname "$src")" && pwd
+}
+
+SELF_DIR=$(self_dir)
+PLUGIN_DIR=$(dirname "$SELF_DIR")
+DEFAULTS_DIR="$PLUGIN_DIR/defaults"
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ress"
+CONFIG_FILE="$CONFIG_DIR/config"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ress"
+DEFAULT_VAULT="${XDG_DATA_HOME:-$HOME/.local/share}/ress/vault"
+
+CATEGORIES=(packages config omarchy webapps plugins secrets)
+
+# ------------------------------------------------------------------- output
+
+PORCELAIN=0
+DRY_RUN=0
+ASSUME_YES=0
+
+c_reset=$'\e[0m'; c_dim=$'\e[2m'; c_bold=$'\e[1m'
+c_green=$'\e[32m'; c_red=$'\e[31m'; c_yellow=$'\e[33m'; c_blue=$'\e[34m'
+if [[ ! -t 1 ]]; then c_reset=""; c_dim=""; c_bold=""; c_green=""; c_red=""; c_yellow=""; c_blue=""; fi
+
+# The panel reads these on stdout. One record per line, pipe-separated, never
+# translated or reordered — it is a protocol, not prose.
+emit() { (( PORCELAIN )) && printf '%s\n' "$*" || true; }
+
+step_start() { emit "STEP|$1|start|$2"; (( PORCELAIN )) || printf '%s▸ %s%s %s\n' "$c_blue" "$1" "$c_reset" "$2"; }
+step_ok()    { emit "STEP|$1|ok|$2";    (( PORCELAIN )) || printf '  %s✓%s %s\n' "$c_green" "$c_reset" "$2"; }
+step_skip()  { emit "STEP|$1|skip|$2";  (( PORCELAIN )) || printf '  %s– %s: %s%s\n' "$c_dim" "$1" "$2" "$c_reset"; }
+step_warn()  { emit "STEP|$1|warn|$2";  (( PORCELAIN )) || printf '  %s!%s %s: %s\n' "$c_yellow" "$c_reset" "$1" "$2"; }
+step_fail()  { emit "STEP|$1|fail|$2";  (( PORCELAIN )) || printf '  %s✗%s %s: %s\n' "$c_red" "$c_reset" "$1" "$2"; }
+progress()   { emit "PROGRESS|$1|$2|$3"; }
+note()       { emit "LOG|$1";           (( PORCELAIN )) || printf '  %s%s%s\n' "$c_dim" "$1" "$c_reset"; }
+
+die() {
+  emit "DONE|fail|$*"
+  printf '%sresurrect: %s%s\n' "$c_red" "$*" "$c_reset" >&2
+  exit 1
+}
+
+confirm() {
+  (( ASSUME_YES )) && return 0
+  [[ -t 0 ]] || die "refusing to continue without confirmation; pass --yes"
+  local reply
+  read -r -p "$1 [y/N] " reply
+  [[ $reply == [yY]* ]]
+}
+
+# ------------------------------------------------------------------- config
+
+declare -A CFG=(
+  [VAULT]="$DEFAULT_VAULT"
+  [REMOTE]=""
+  [AUTO_BACKUP]="off"
+  [AUTO_INTERVAL_HOURS]="24"
+  [AUTO_PUSH]="0"
+  [INCLUDE_PACKAGES]="1"
+  [INCLUDE_CONFIG]="1"
+  [INCLUDE_OMARCHY]="1"
+  [INCLUDE_WEBAPPS]="1"
+  [INCLUDE_PLUGINS]="1"
+  [INCLUDE_SECRETS]="0"
+  [SECRETS_MODE]="passphrase"
+  [SECRETS_RECIPIENT]=""
+  [PROFILE_URL]=""
+)
+
+load_config() {
+  [[ -f $CONFIG_FILE ]] || return 0
+  local line key value
+  while IFS= read -r line; do
+    line="${line%%#*}"
+    [[ $line == *=* ]] || continue
+    key="${line%%=*}"; value="${line#*=}"
+    key="${key//[[:space:]]/}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    [[ -n $key ]] && CFG[$key]="$value"
+  done <"$CONFIG_FILE"
+}
+
+save_config() {
+  mkdir -p "$CONFIG_DIR"
+  local tmp="$CONFIG_FILE.tmp.$$"
+  {
+    echo "# Resurrect configuration. Written by \`ress set\` and by the panel."
+    echo "# Both the CLI and the Quickshell panel read this file; there is no second source."
+    echo
+    local key
+    for key in VAULT REMOTE AUTO_BACKUP AUTO_INTERVAL_HOURS AUTO_PUSH \
+      INCLUDE_PACKAGES INCLUDE_CONFIG INCLUDE_OMARCHY INCLUDE_WEBAPPS \
+      INCLUDE_PLUGINS INCLUDE_SECRETS SECRETS_MODE SECRETS_RECIPIENT PROFILE_URL; do
+      printf '%s=%s\n' "$key" "${CFG[$key]}"
+    done
+  } >"$tmp"
+  mv "$tmp" "$CONFIG_FILE"
+}
+
+cat_enabled() {
+  local key="INCLUDE_$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+  [[ ${CFG[$key]:-0} == 1 ]]
+}
+
+VAULT=""
+resolve_vault() { VAULT="${VAULT_OVERRIDE:-${CFG[VAULT]}}"; }
+
+# ------------------------------------------------------------------- helpers
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# "1 plugins" reads like a bug even when the number is right.
+plural() {
+  local n=$1 one=$2 many=${3:-$2s}
+  if (( n == 1 )); then printf '%d %s' "$n" "$one"; else printf '%d %s' "$n" "$many"; fi
+}
+
+duration() {
+  local s=$1
+  if (( s < 60 )); then printf '%ds' "$s"
+  else printf '%dm %ds' $((s / 60)) $((s % 60)); fi
+}
+
+json_escape() { printf '%s' "$1" | jq -Rs .; }
+
+# grep -c prints a count and still exits 1 on zero matches, so the naive
+# `grep -c ... || echo 0` prints "0\n0" and poisons every jq --argjson downstream.
+count_lines() {
+  if [[ -f $1 ]]; then
+    grep -cve '^[[:space:]]*$' "$1" 2>/dev/null || true
+  else
+    printf '0\n'
+  fi
+}
+
+# Concatenate the shipped list with the user's, dropping comments and blanks.
+merged_list() {
+  local name="$1"
+  { [[ -f "$DEFAULTS_DIR/$name.txt" ]] && cat "$DEFAULTS_DIR/$name.txt"
+    [[ -f "$CONFIG_DIR/$name" ]] && cat "$CONFIG_DIR/$name"
+  } 2>/dev/null | sed -e 's/[[:space:]]*$//' -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d'
+}
+
+git_vault() { git -C "$VAULT" "$@"; }
+
+ensure_vault_repo() {
+  mkdir -p "$VAULT"
+  if [[ ! -d $VAULT/.git ]]; then
+    git_vault init -q -b main
+    git_vault config user.name "$(git config --global user.name 2>/dev/null || echo "$USER")"
+    git_vault config user.email "$(git config --global user.email 2>/dev/null || echo "$USER@$(hostname)")"
+    printf '%s\n' \
+      "# Resurrect vault" "" \
+      "This directory is a snapshot of an Omarchy machine, written by" \
+      "[Resurrect](https://github.com/tsouth89/omarchy-resurrect)." "" \
+      "Replay it onto a fresh install with:" "" \
+      '```bash' "ress restore --vault $VAULT" '```' >"$VAULT/README.md"
+  fi
+}
+
+# ================================================================== CAPTURE
+
+capture_packages() {
+  local out="$VAULT/packages"
+  mkdir -p "$out"
+  step_start packages "Reading the package database"
+  pacman -Qqen >"$out/native.txt" 2>/dev/null || : >"$out/native.txt"
+  pacman -Qqem >"$out/foreign.txt" 2>/dev/null || : >"$out/foreign.txt"
+  local n f
+  n=$(count_lines "$out/native.txt"); f=$(count_lines "$out/foreign.txt")
+  step_ok packages "$(plural "$n" "explicit package"), $f from the AUR"
+  CAPTURED_PACKAGES=$((n + f))
+  return 0
+}
+
+# Everything the include list points at, minus the exclude patterns, mirrored
+# into the vault at its $HOME-relative path. ~/.config/omarchy is deliberately
+# absent — it is the `omarchy` category's job, which knows to leave the plugin
+# checkouts behind.
+capture_config() {
+  local out="$VAULT/home"
+  rm -rf "$out"; mkdir -p "$out"
+  step_start config "Copying dotfiles"
+
+  local excludes="$STATE_DIR/exclude.rsync"
+  mkdir -p "$STATE_DIR"
+  merged_list exclude >"$excludes"
+  printf '%s\n' ".config/omarchy/" >>"$excludes"
+
+  local entries=() entry present=0 missing=0
+  while IFS= read -r entry; do entries+=("$entry"); done < <(merged_list include)
+
+  local total=${#entries[@]} i=0
+  for entry in "${entries[@]}"; do
+    i=$((i + 1))
+    progress config "$i" "$total"
+    [[ -e $HOME/$entry ]] || { missing=$((missing + 1)); continue; }
+    rsync -a --relative --copy-links --exclude-from="$excludes" \
+      --max-size=20m "$HOME/./$entry" "$out/" 2>/dev/null || true
+    present=$((present + 1))
+  done
+
+  # Name what we walked past. A backup tool that quietly captures 30% of your
+  # config is worse than one that captures 30% and says so.
+  # `systemctl --user enable` writes symlink farms under *.wants/. Those are
+  # state, not configuration: copying them produces unit files that shadow the
+  # real ones. Record what is enabled instead and re-enable it on the far side.
+  mkdir -p "$VAULT/services"
+  if have systemctl; then
+    systemctl --user list-unit-files --state=enabled --no-legend --plain 2>/dev/null |
+      awk '{print $1}' >"$VAULT/services/user-units.txt" || : >"$VAULT/services/user-units.txt"
+  else
+    : >"$VAULT/services/user-units.txt"
+  fi
+  CAPTURED_UNITS=$(count_lines "$VAULT/services/user-units.txt")
+
+  local skipped="$VAULT/report"
+  mkdir -p "$skipped"
+  : >"$skipped/not-captured.txt"
+  local dir base
+  for dir in "$HOME"/.config/*/; do
+    base=".config/$(basename "$dir")"
+    grep -qxF "$base" <(printf '%s\n' "${entries[@]}") && continue
+    [[ $base == ".config/omarchy" ]] && continue
+    printf '%s\n' "$base" >>"$skipped/not-captured.txt"
+  done
+  local unknown; unknown=$(count_lines "$skipped/not-captured.txt")
+
+  CAPTURED_CONFIG=$present
+  CAPTURED_UNCAPTURED=$unknown
+  step_ok config "$present paths captured, ${CAPTURED_UNITS:-0} user services enabled"
+  (( unknown > 0 )) && note "$unknown config directories were not on the list (see report/not-captured.txt)"
+  return 0
+}
+
+capture_omarchy() {
+  local out="$VAULT/omarchy"
+  rm -rf "$out"; mkdir -p "$out"
+  step_start omarchy "Capturing Omarchy state"
+
+  local src="$HOME/.config/omarchy"
+  local item
+  for item in shell.json shell.toml; do
+    [[ -f $src/$item ]] && cp "$src/$item" "$out/$item"
+  done
+  for item in branding defaults extensions hooks themed; do
+    [[ -d $src/$item ]] && rsync -a "$src/$item/" "$out/$item/" 2>/dev/null
+  done
+
+  # Themes: git-installed ones travel as a URL, hand-made ones as files.
+  mkdir -p "$out/themes"
+  : >"$out/themes.tsv"
+  local theme name url
+  for theme in "$src"/themes/*/; do
+    [[ -d $theme ]] || continue
+    name=$(basename "$theme")
+    url=$(git -C "$theme" remote get-url origin 2>/dev/null || true)
+    if [[ -n $url ]]; then
+      printf '%s\t%s\n' "$name" "$url" >>"$out/themes.tsv"
+    else
+      printf '%s\t\n' "$name" >>"$out/themes.tsv"
+      rsync -a --exclude '.git/' "$theme" "$out/themes/$name/" 2>/dev/null
+    fi
+  done
+
+  # Which theme is on, and which of its backgrounds.
+  [[ -f $HOME/.local/state/omarchy/current/theme.name ]] &&
+    cp "$HOME/.local/state/omarchy/current/theme.name" "$out/theme.name"
+  local bg
+  bg=$(readlink "$HOME/.local/state/omarchy/current/background" 2>/dev/null || true)
+  [[ -n $bg ]] && basename "$bg" >"$out/background.name"
+
+  local themes; themes=$(count_lines "$out/themes.tsv")
+  CAPTURED_THEMES=$themes
+  step_ok omarchy "shell layout, $themes themes, $(cat "$out/theme.name" 2>/dev/null || echo "no") theme active"
+  return 0
+}
+
+# Omarchy web apps are .desktop files whose Exec runs omarchy-launch-webapp.
+# That signature is what separates the six you made from the two hundred your
+# package manager installed.
+capture_webapps() {
+  local out="$VAULT/webapps"
+  rm -rf "$out"; mkdir -p "$out/apps" "$out/icons"
+  step_start webapps "Finding web apps"
+
+  local n=0 desktop icon
+  for desktop in "$HOME"/.local/share/applications/*.desktop; do
+    [[ -f $desktop ]] || continue
+    grep -q "omarchy-launch-webapp\|omarchy-launch-or-focus-webapp" "$desktop" || continue
+    cp "$desktop" "$out/apps/"
+    n=$((n + 1))
+    icon=$(sed -n 's/^Icon=//p' "$desktop" | head -1)
+    [[ -n $icon ]] || continue
+    local found
+    for found in "$HOME"/.local/share/icons/hicolor/*/apps/"$icon".*; do
+      [[ -f $found ]] && cp "$found" "$out/icons/" && break
+    done
+  done
+  CAPTURED_WEBAPPS=$n
+  step_ok webapps "$(plural "$n" "web app")"
+  return 0
+}
+
+capture_plugins() {
+  local out="$VAULT/plugins"
+  mkdir -p "$out"
+  : >"$out/plugins.tsv"
+  step_start plugins "Listing shell plugins"
+
+  local n=0 dir id url enabled shell_json="$HOME/.config/omarchy/shell.json"
+  for dir in "$HOME"/.config/omarchy/plugins/*/; do
+    [[ -f $dir/manifest.json ]] || continue
+    id=$(jq -r '.id // empty' "$dir/manifest.json" 2>/dev/null) || continue
+    [[ -n $id ]] || continue
+    url=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
+    enabled=0
+    if [[ -f $shell_json ]] && grep -qF "\"$id\"" "$shell_json"; then enabled=1; fi
+    printf '%s\t%s\t%s\n' "$id" "$url" "$enabled" >>"$out/plugins.tsv"
+    n=$((n + 1))
+    [[ -z $url ]] && step_warn plugins "$id has no git remote — it will not be restored"
+  done
+  CAPTURED_PLUGINS=$n
+  step_ok plugins "$(plural "$n" plugin)"
+  return 0
+}
+
+capture_secrets() {
+  local out="$VAULT/secrets"
+  mkdir -p "$out"
+  local list="$CONFIG_DIR/secrets"
+
+  if ! have age; then
+    step_skip secrets "age is not installed — run: sudo pacman -S age"
+    return 0
+  fi
+  if [[ ! -f $list ]]; then
+    step_skip secrets "no secrets list — run: ress secrets init"
+    return 0
+  fi
+
+  local paths=() p
+  while IFS= read -r p; do [[ -e $HOME/$p ]] && paths+=("$p"); done < <(merged_list_file "$list")
+  if (( ${#paths[@]} == 0 )); then
+    step_skip secrets "nothing on the secrets list exists here"
+    return 0
+  fi
+
+  step_start secrets "Encrypting ${#paths[@]} paths"
+  local args=()
+  case "${CFG[SECRETS_MODE]}" in
+    recipient)
+      [[ -n ${CFG[SECRETS_RECIPIENT]} ]] || { step_fail secrets "SECRETS_MODE=recipient but SECRETS_RECIPIENT is empty"; return 0; }
+      if [[ -f ${CFG[SECRETS_RECIPIENT]} ]]; then args=(-R "${CFG[SECRETS_RECIPIENT]}")
+      else args=(-r "${CFG[SECRETS_RECIPIENT]}"); fi
+      ;;
+    *)
+      if (( PORCELAIN )) || [[ ! -t 0 ]]; then
+        step_skip secrets "passphrase mode needs a terminal — run: ress backup"
+        return 0
+      fi
+      args=(-p)
+      ;;
+  esac
+
+  tar -C "$HOME" -cf - --numeric-owner "${paths[@]}" 2>/dev/null |
+    age "${args[@]}" -o "$out/secrets.tar.age" ||
+    { step_fail secrets "encryption failed"; return 0; }
+  chmod 600 "$out/secrets.tar.age"
+  CAPTURED_SECRETS=${#paths[@]}
+  step_ok secrets "${#paths[@]} paths encrypted"
+  return 0
+}
+
+merged_list_file() {
+  sed -e 's/[[:space:]]*$//' -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$1"
+}
+
+# ================================================================== MANIFEST
+
+write_manifest() {
+  local omarchy_version="unknown"
+  [[ -f /usr/share/omarchy/version ]] && omarchy_version=$(</usr/share/omarchy/version)
+
+  jq -n \
+    --argjson schema "$SCHEMA" \
+    --arg version "$VERSION" \
+    --arg createdAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg hostname "$(hostname)" \
+    --arg user "$USER" \
+    --arg omarchy "$omarchy_version" \
+    --arg kernel "$(uname -r)" \
+    --argjson categories "$(printf '%s\n' "${DONE_CATEGORIES[@]:-}" | jq -Rs 'split("\n") | map(select(length > 0))')" \
+    --argjson counts "$(jq -n \
+      --argjson packages "${CAPTURED_PACKAGES:-0}" \
+      --argjson config "${CAPTURED_CONFIG:-0}" \
+      --argjson themes "${CAPTURED_THEMES:-0}" \
+      --argjson webapps "${CAPTURED_WEBAPPS:-0}" \
+      --argjson plugins "${CAPTURED_PLUGINS:-0}" \
+      --argjson secrets "${CAPTURED_SECRETS:-0}" \
+      --argjson uncaptured "${CAPTURED_UNCAPTURED:-0}" \
+      --argjson services "${CAPTURED_UNITS:-0}" \
+      '$ARGS.named')" \
+    '{schemaVersion: $schema, resurrectVersion: $version, createdAt: $createdAt,
+      machine: {hostname: $hostname, user: $user, omarchy: $omarchy, kernel: $kernel},
+      categories: $categories, counts: $counts}' >"$VAULT/resurrect.json"
+}
+
+# ==================================================================== BACKUP
+
+cmd_backup() {
+  local message="" push=0 force_secrets=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --message|-m) message="${2:-}"; shift 2 ;;
+      --push) push=1; shift ;;
+      --secrets) force_secrets=1; shift ;;
+      --no-secrets) CFG[INCLUDE_SECRETS]=0; shift ;;
+      *) die "unknown backup option: $1" ;;
+    esac
+  done
+  (( force_secrets )) && CFG[INCLUDE_SECRETS]=1
+
+  resolve_vault
+  ensure_vault_repo
+  local backup_started=$SECONDS
+  emit "BEGIN|backup|$VAULT"
+
+  DONE_CATEGORIES=()
+  local category
+  for category in "${CATEGORIES[@]}"; do
+    if ! cat_enabled "$category"; then
+      step_skip "$category" "turned off"
+      continue
+    fi
+    "capture_$category"
+    DONE_CATEGORIES+=("$category")
+  done
+
+  write_manifest
+
+  git_vault add -A
+  if git_vault diff --cached --quiet; then
+    step_skip commit "nothing changed since the last backup"
+  else
+    local subject="${message:-Backup from $(hostname) at $(date '+%Y-%m-%d %H:%M')}"
+    git_vault -c commit.gpgsign=false commit -q -m "$subject"
+    step_ok commit "$(git_vault rev-parse --short HEAD)"
+  fi
+
+  if (( push )) || [[ ${CFG[AUTO_PUSH]} == 1 ]]; then
+    push_vault
+  fi
+
+  mkdir -p "$STATE_DIR"
+  date -u +%s >"$STATE_DIR/last-backup"
+  emit "DONE|ok|backup complete"
+  (( PORCELAIN )) || printf '\n%sBacked up to %s%s in %s\n' "$c_bold" "$VAULT" "$c_reset" "$(duration $((SECONDS - backup_started)))"
+}
+
+push_vault() {
+  local remote="${CFG[REMOTE]}"
+  if [[ -z $remote ]]; then
+    step_skip push "no remote configured"
+    return 0
+  fi
+  git_vault remote get-url origin >/dev/null 2>&1 ||
+    git_vault remote add origin "$remote"
+  git_vault remote set-url origin "$remote"
+  step_start push "Pushing to $remote"
+  if git_vault push -q -u origin HEAD 2>/dev/null; then
+    step_ok push "pushed"
+  else
+    step_fail push "push failed — check credentials or run: git -C $VAULT push"
+  fi
+}
+
+# =================================================================== RESTORE
+
+RESTORE_STATE=""
+RESTORE_FAILED=0
+
+step_done()      { grep -qxF "$1" "$RESTORE_STATE" 2>/dev/null; }
+mark_done()      { printf '%s\n' "$1" >>"$RESTORE_STATE"; }
+
+# Never clobber in silence. Anything restore overwrites is moved aside first,
+# so a restore onto a machine you actually use is reversible.
+RSYNC_SAFE=(-a --backup --suffix=".resurrect-bak")
+
+restore_packages() {
+  local dir="$VAULT/packages"
+  [[ -d $dir ]] || { step_skip packages "not in this vault"; return 0; }
+  step_start packages "Working out what is missing"
+
+  local installed="$STATE_DIR/installed.txt"
+  pacman -Qq | sort >"$installed"
+
+  local missing_native missing_foreign
+  missing_native=$(comm -23 <(sort -u "$dir/native.txt") "$installed" || true)
+  missing_foreign=$(comm -23 <(sort -u "$dir/foreign.txt") "$installed" || true)
+
+  local n_count f_count
+  n_count=$(printf '%s' "$missing_native" | grep -c . || true)
+  f_count=$(printf '%s' "$missing_foreign" | grep -c . || true)
+
+  if (( n_count == 0 && f_count == 0 )); then
+    step_ok packages "already complete — nothing to install"
+    return 0
+  fi
+  step_ok packages "$n_count from the repos, $f_count from the AUR"
+
+  if (( DRY_RUN )); then
+    printf '%s\n' $missing_native $missing_foreign | sed 's/^/    /'
+    return 0
+  fi
+
+  if (( n_count > 0 )); then
+    step_start packages "Installing $n_count packages"
+    # shellcheck disable=SC2086
+    if sudo pacman -S --needed --noconfirm $missing_native; then
+      step_ok packages "repo packages installed"
+    else
+      step_fail packages "some repo packages failed"; RESTORE_FAILED=1
+    fi
+  fi
+
+  if (( f_count > 0 )); then
+    if have yay; then
+      step_start packages "Building $f_count AUR packages"
+      # shellcheck disable=SC2086
+      if yay -S --needed --noconfirm --answerclean None --answerdiff None $missing_foreign; then
+        step_ok packages "AUR packages installed"
+      else
+        step_warn packages "some AUR packages failed — see packages/foreign.txt"
+      fi
+    else
+      step_warn packages "yay is not installed; skipped $f_count AUR packages"
+    fi
+  fi
+  return 0
+}
+
+restore_config() {
+  local dir="$VAULT/home"
+  [[ -d $dir ]] || { step_skip config "not in this vault"; return 0; }
+  local n; n=$(find "$dir" -type f | wc -l)
+  step_start config "Restoring $n files into \$HOME"
+  if (( DRY_RUN )); then
+    rsync -an --out-format='    %n' "${RSYNC_SAFE[@]}" "$dir/" "$HOME/"
+    return 0
+  fi
+  rsync "${RSYNC_SAFE[@]}" "$dir/" "$HOME/"
+  step_ok config "$n files restored (replaced files kept as *.resurrect-bak)"
+
+  local units="$VAULT/services/user-units.txt"
+  if [[ -s $units ]] && have systemctl; then
+    local unit enabled=0
+    while IFS= read -r unit; do
+      [[ -n $unit ]] || continue
+      systemctl --user is-enabled "$unit" >/dev/null 2>&1 && continue
+      systemctl --user enable "$unit" >/dev/null 2>&1 && enabled=$((enabled + 1))
+    done <"$units"
+    (( enabled > 0 )) && step_ok config "$enabled user services enabled"
+  fi
+  return 0
+}
+
+restore_omarchy() {
+  local dir="$VAULT/omarchy"
+  [[ -d $dir ]] || { step_skip omarchy "not in this vault"; return 0; }
+  local dest="$HOME/.config/omarchy"
+  mkdir -p "$dest/themes"
+  step_start omarchy "Restoring Omarchy state"
+  (( DRY_RUN )) && { step_skip omarchy "dry run"; return 0; }
+
+  local item
+  for item in branding defaults extensions hooks themed; do
+    [[ -d $dir/$item ]] && rsync "${RSYNC_SAFE[@]}" "$dir/$item/" "$dest/$item/"
+  done
+  [[ -f $dir/shell.toml ]] && cp -n "$dir/shell.toml" "$dest/shell.toml" 2>/dev/null || true
+
+  # Themes before shell.json: the shell reads the active theme on reload, and
+  # pointing it at a theme that is not on disk yet gives you a grey desktop.
+  local name url installed=0
+  if [[ -f $dir/themes.tsv ]]; then
+    while IFS=$'\t' read -r name url; do
+      [[ -n $name ]] || continue
+      [[ -d $dest/themes/$name ]] && continue
+      if [[ -n $url ]]; then
+        if git clone -q --depth 1 "$url" "$dest/themes/$name" 2>/dev/null; then
+          installed=$((installed + 1))
+        else
+          step_warn omarchy "could not clone theme $name from $url"
+        fi
+      elif [[ -d $dir/themes/$name ]]; then
+        rsync -a "$dir/themes/$name/" "$dest/themes/$name/"
+        installed=$((installed + 1))
+      fi
+    done <"$dir/themes.tsv"
+  fi
+  (( installed > 0 )) && step_ok omarchy "$installed themes installed"
+
+  [[ -f $dir/shell.json ]] && cp "$dir/shell.json" "$dest/shell.json"
+  step_ok omarchy "shell layout restored"
+
+  if [[ -f $dir/theme.name ]] && have omarchy-theme-set; then
+    local theme; theme=$(<"$dir/theme.name")
+    omarchy-theme-set "$theme" >/dev/null 2>&1 &&
+      step_ok omarchy "theme set to $theme" ||
+      step_warn omarchy "could not apply theme $theme"
+  fi
+  return 0
+}
+
+restore_webapps() {
+  local dir="$VAULT/webapps"
+  [[ -d $dir/apps ]] || { step_skip webapps "not in this vault"; return 0; }
+  local n; n=$(find "$dir/apps" -name '*.desktop' | wc -l)
+  step_start webapps "Restoring $n web apps"
+  (( DRY_RUN )) && { step_skip webapps "dry run"; return 0; }
+
+  mkdir -p "$HOME/.local/share/applications" "$HOME/.local/share/icons/hicolor/256x256/apps"
+  rsync -a "$dir/apps/" "$HOME/.local/share/applications/"
+  [[ -d $dir/icons ]] && rsync -a "$dir/icons/" "$HOME/.local/share/icons/hicolor/256x256/apps/"
+  chmod +x "$HOME"/.local/share/applications/*.desktop 2>/dev/null || true
+  have gtk-update-icon-cache && gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" &>/dev/null || true
+  have update-desktop-database && update-desktop-database "$HOME/.local/share/applications" &>/dev/null || true
+  step_ok webapps "$n web apps restored"
+  return 0
+}
+
+restore_plugins() {
+  local file="$VAULT/plugins/plugins.tsv"
+  [[ -f $file ]] || { step_skip plugins "not in this vault"; return 0; }
+  local total; total=$(count_lines "$file")
+  (( total > 0 )) || { step_skip plugins "none in this vault"; return 0; }
+  step_start plugins "Reinstalling $total plugins"
+  (( DRY_RUN )) && { sed 's/^/    /' "$file"; return 0; }
+
+  local id url enabled i=0 ok=0
+  while IFS=$'\t' read -r id url enabled; do
+    i=$((i + 1))
+    progress plugins "$i" "$total"
+    [[ -n $id ]] || continue
+    if [[ -z $url ]]; then
+      step_warn plugins "$id has no git remote — install it by hand"
+      continue
+    fi
+    if [[ -d $HOME/.config/omarchy/plugins/$id ]]; then
+      ok=$((ok + 1)); continue
+    fi
+    # Prefer the real installer when the shell is up (it validates the manifest
+    # and warns about running third-party code); fall back to a plain clone so a
+    # restore also works from a TTY before the desktop exists.
+    if omarchy-shell shell ping >/dev/null 2>&1; then
+      local args=(--yes)
+      [[ $enabled == 1 ]] && args+=(--enable)
+      if omarchy plugin add "$url" "${args[@]}" >/dev/null 2>&1; then
+        ok=$((ok + 1)); continue
+      fi
+    fi
+    if git clone -q --depth 1 "$url" "$HOME/.config/omarchy/plugins/$id" 2>/dev/null &&
+      omarchy plugin validate "$HOME/.config/omarchy/plugins/$id" >/dev/null 2>&1; then
+      ok=$((ok + 1))
+    else
+      rm -rf "$HOME/.config/omarchy/plugins/$id"
+      step_warn plugins "could not add $id from $url"
+    fi
+  done <"$file"
+  step_ok plugins "$ok of $total plugins in place"
+  return 0
+}
+
+restore_secrets() {
+  local blob="$VAULT/secrets/secrets.tar.age"
+  [[ -f $blob ]] || { step_skip secrets "not in this vault"; return 0; }
+  if ! have age; then
+    step_warn secrets "age is not installed — run: sudo pacman -S age, then: ress restore --only secrets"
+    return 0
+  fi
+  if (( DRY_RUN )); then step_skip secrets "dry run"; return 0; fi
+  if [[ ! -t 0 ]]; then
+    step_skip secrets "needs a terminal — run: ress restore --only secrets"
+    return 0
+  fi
+
+  step_start secrets "Decrypting"
+  local args=()
+  if [[ ${CFG[SECRETS_MODE]} == recipient ]]; then
+    local identity="${CFG[SECRETS_RECIPIENT]%.pub}"
+    [[ -f $identity ]] || { step_fail secrets "identity file $identity not found — bring it here first"; return 0; }
+    args=(-i "$identity")
+  fi
+  if age -d "${args[@]}" "$blob" | tar -C "$HOME" -xf - ; then
+    chmod 700 "$HOME/.ssh" 2>/dev/null || true
+    find "$HOME/.ssh" -type f -exec chmod 600 {} \; 2>/dev/null || true
+    step_ok secrets "secrets restored with 0600 permissions"
+  else
+    step_fail secrets "decryption failed"
+    RESTORE_FAILED=1
+  fi
+  return 0
+}
+
+# Packages first (everything else may need a binary), plugins before `omarchy`
+# so the restored shell.json is the last word on what is enabled.
+RESTORE_ORDER=(packages config plugins omarchy webapps secrets)
+
+cmd_restore() {
+  local from="" only="" skip="" restart=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --from) from="${2:-}"; shift 2 ;;
+      --only) only="${2:-}"; shift 2 ;;
+      --skip) skip="${2:-}"; shift 2 ;;
+      --restart) restart=1; shift ;;
+      *) die "unknown restore option: $1" ;;
+    esac
+  done
+
+  resolve_vault
+  if [[ -n $from ]]; then
+    if [[ -d $VAULT/.git ]]; then
+      step_start clone "Updating vault from $from"
+      git_vault remote set-url origin "$from" 2>/dev/null || git_vault remote add origin "$from"
+      git_vault fetch -q --depth 1 origin && git_vault reset -q --hard FETCH_HEAD
+      step_ok clone "vault updated"
+    else
+      step_start clone "Cloning $from"
+      rm -rf "$VAULT"; mkdir -p "$(dirname "$VAULT")"
+      git clone -q --depth 1 "$from" "$VAULT" || die "could not clone $from"
+      step_ok clone "cloned to $VAULT"
+    fi
+    CFG[REMOTE]="$from"
+    save_config
+  fi
+
+  [[ -f $VAULT/resurrect.json ]] || die "no vault at $VAULT — pass --from <git-url> or --vault <dir>"
+  local schema; schema=$(jq -r '.schemaVersion // 0' "$VAULT/resurrect.json")
+  (( schema == SCHEMA )) || die "vault schema $schema is not readable by Resurrect $VERSION"
+
+  mkdir -p "$STATE_DIR"
+  RESTORE_STATE="$STATE_DIR/restore.state"
+  (( restart )) && rm -f "$RESTORE_STATE"
+  touch "$RESTORE_STATE"
+
+  local origin; origin=$(jq -r '.machine.hostname // "?"' "$VAULT/resurrect.json")
+  local created; created=$(jq -r '.createdAt // "?"' "$VAULT/resurrect.json")
+
+  if (( ! DRY_RUN )); then
+    printf '%sResurrecting %s%s (backed up %s) onto %s.%s\n' \
+      "$c_bold" "$origin" "$c_reset$c_dim" "$created" "$(hostname)" "$c_reset"
+    confirm "This overwrites configuration in your home directory. Continue?" ||
+      die "cancelled"
+  fi
+
+  emit "BEGIN|restore|$VAULT"
+  local started=$SECONDS
+  local category
+  for category in "${RESTORE_ORDER[@]}"; do
+    [[ -n $only ]] && [[ ",$only," != *",$category,"* ]] && continue
+    [[ -n $skip ]] && [[ ",$skip," == *",$category,"* ]] && { step_skip "$category" "skipped"; continue; }
+    if (( ! DRY_RUN )) && step_done "$category"; then
+      step_skip "$category" "already done — pass --restart to redo"
+      continue
+    fi
+    "restore_$category"
+    (( DRY_RUN )) || mark_done "$category"
+  done
+
+  if (( ! DRY_RUN )); then
+    have omarchy-restart-shell && omarchy-restart-shell >/dev/null 2>&1 &
+    local elapsed=$((SECONDS - started))
+    printf '\n'
+    if (( RESTORE_FAILED )); then
+      step_warn restore "finished with problems — rerun to pick up where it stopped"
+    else
+      printf '%sThis machine is yours again%s — in %s. Log out and back in to pick up\nshell and session changes.\n' \
+        "$c_bold" "$c_reset" "$(duration "$elapsed")"
+    fi
+  fi
+  emit "DONE|$( (( RESTORE_FAILED )) && echo partial || echo ok)|restore complete"
+  return $RESTORE_FAILED
+}
+
+# ==================================================================== STATUS
+
+cmd_status() {
+  local as_json=0
+  [[ ${1:-} == --json ]] && as_json=1
+  resolve_vault
+
+  local last=0 commits=0 dirty=0 ahead=0 has_vault=0
+  [[ -f $STATE_DIR/last-backup ]] && last=$(<"$STATE_DIR/last-backup")
+  if [[ -f $VAULT/resurrect.json ]]; then
+    has_vault=1
+    commits=$(git_vault rev-list --count HEAD 2>/dev/null || echo 0)
+    git_vault diff --quiet 2>/dev/null || dirty=1
+    ahead=$(git_vault rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
+  fi
+
+  if (( as_json )); then
+    jq -n \
+      --argjson hasVault "$has_vault" \
+      --arg vault "$VAULT" \
+      --arg remote "${CFG[REMOTE]}" \
+      --argjson lastBackup "${last:-0}" \
+      --argjson commits "${commits:-0}" \
+      --argjson unpushed "${ahead:-0}" \
+      --argjson autoBackup "$( [[ ${CFG[AUTO_BACKUP]} == on ]] && echo true || echo false )" \
+      --argjson intervalHours "${CFG[AUTO_INTERVAL_HOURS]:-24}" \
+      --argjson categories "$(jq -n \
+        --argjson packages "${CFG[INCLUDE_PACKAGES]}" \
+        --argjson config "${CFG[INCLUDE_CONFIG]}" \
+        --argjson omarchy "${CFG[INCLUDE_OMARCHY]}" \
+        --argjson webapps "${CFG[INCLUDE_WEBAPPS]}" \
+        --argjson plugins "${CFG[INCLUDE_PLUGINS]}" \
+        --argjson secrets "${CFG[INCLUDE_SECRETS]}" \
+        '$ARGS.named | map_values(. == 1)')" \
+      --argjson manifest "$( [[ -f $VAULT/resurrect.json ]] && cat "$VAULT/resurrect.json" || echo null )" \
+      '$ARGS.named'
+    return 0
+  fi
+
+  printf '%sResurrect%s %s\n\n' "$c_bold" "$c_reset" "$VERSION"
+  printf '  vault      %s\n' "$VAULT"
+  printf '  remote     %s\n' "${CFG[REMOTE]:-${c_dim}none${c_reset}}"
+  if (( has_vault )); then
+    printf '  backups    %s\n' "$commits"
+    printf '  last       %s\n' "$( (( last > 0 )) && date -d "@$last" '+%Y-%m-%d %H:%M' || echo never)"
+    (( ahead > 0 )) && printf '  unpushed   %s%s commits%s\n' "$c_yellow" "$ahead" "$c_reset"
+    printf '\n'
+    jq -r 'def n(v; one): (v|tostring) + " " + (if v == 1 then one else one + "s" end);
+      "  captured   " + n(.counts.packages; "package") + ", " + n(.counts.config; "config path")
+      + ", " + n(.counts.themes; "theme") + ", " + n(.counts.webapps; "web app")
+      + ", " + n(.counts.plugins; "plugin")' \
+      "$VAULT/resurrect.json"
+  else
+    printf '  %sno backup yet — run: ress backup%s\n' "$c_dim" "$c_reset"
+  fi
+  printf '\n  categories '
+  local category key
+  for category in "${CATEGORIES[@]}"; do
+    key="INCLUDE_$(printf '%s' "$category" | tr '[:lower:]' '[:upper:]')"
+    if [[ ${CFG[$key]} == 1 ]]; then printf '%s%s%s ' "$c_green" "$category" "$c_reset"
+    else printf '%s%s%s ' "$c_dim" "$category" "$c_reset"; fi
+  done
+  printf '\n'
+}
+
+# ================================================================== SETTINGS
+
+cmd_init() {
+  local remote=""
+  while (( $# > 0 )); do
+    case "$1" in
+      --remote) remote="${2:-}"; shift 2 ;;
+      *) die "unknown init option: $1" ;;
+    esac
+  done
+  resolve_vault
+  ensure_vault_repo
+  CFG[VAULT]="$VAULT"
+  [[ -n $remote ]] && CFG[REMOTE]="$remote"
+  save_config
+  mkdir -p "$CONFIG_DIR"
+  [[ -f $CONFIG_DIR/include ]] || printf '%s\n' \
+    "# Extra paths to capture, one per line, relative to \$HOME." \
+    "# These are added to the list shipped with Resurrect." >"$CONFIG_DIR/include"
+  [[ -f $CONFIG_DIR/exclude ]] || printf '%s\n' \
+    "# Extra rsync patterns to leave out of every capture." >"$CONFIG_DIR/exclude"
+  printf 'Vault ready at %s\n' "$VAULT"
+  [[ -n $remote ]] && printf 'Remote set to %s\n' "$remote"
+  printf 'Run: ress backup\n'
+}
+
+cmd_set() {
+  (( $# > 0 )) || die "usage: ress set KEY=VALUE [KEY=VALUE...]"
+  local pair key value
+  for pair in "$@"; do
+    [[ $pair == *=* ]] || die "expected KEY=VALUE, got: $pair"
+    key="${pair%%=*}"; value="${pair#*=}"
+    key=$(printf '%s' "$key" | tr '[:lower:]-' '[:upper:]_')
+    [[ -v CFG[$key] ]] || die "unknown setting: $key"
+    CFG[$key]="$value"
+  done
+  save_config
+  printf 'Saved to %s\n' "$CONFIG_FILE"
+}
+
+cmd_secrets() {
+  local action="${1:-list}"; shift || true
+  case "$action" in
+    init)
+      mkdir -p "$CONFIG_DIR"
+      if [[ -f $CONFIG_DIR/secrets ]]; then
+        printf 'Already at %s\n' "$CONFIG_DIR/secrets"
+      else
+        cat >"$CONFIG_DIR/secrets" <<'LIST'
+# Paths encrypted into the vault, one per line, relative to $HOME.
+#
+# Nothing here leaves the machine in the clear: the whole set is tarred and
+# encrypted with age before it is written, and the vault only ever holds the
+# ciphertext. Encryption is off until INCLUDE_SECRETS=1.
+#
+# In the default passphrase mode you will be asked for a passphrase at backup
+# and at restore, and it is never stored anywhere. Lose it and this is noise.
+
+.ssh
+.config/gh/hosts.yml
+.gnupg
+LIST
+        printf 'Wrote %s — edit it, then: ress set INCLUDE_SECRETS=1\n' "$CONFIG_DIR/secrets"
+      fi
+      have age || printf '\n%sage is not installed. Run: sudo pacman -S age%s\n' "$c_yellow" "$c_reset"
+      ;;
+    list)
+      [[ -f $CONFIG_DIR/secrets ]] || die "no secrets list — run: ress secrets init"
+      merged_list_file "$CONFIG_DIR/secrets"
+      ;;
+    add)
+      [[ -n ${1:-} ]] || die "usage: ress secrets add <path-relative-to-home>"
+      mkdir -p "$CONFIG_DIR"; touch "$CONFIG_DIR/secrets"
+      printf '%s\n' "$1" >>"$CONFIG_DIR/secrets"
+      printf 'Added %s\n' "$1"
+      ;;
+    enable)  CFG[INCLUDE_SECRETS]=1; save_config; printf 'Secrets will be captured on the next backup.\n' ;;
+    disable) CFG[INCLUDE_SECRETS]=0; save_config; printf 'Secrets will not be captured.\n' ;;
+    *) die "unknown secrets action: $action" ;;
+  esac
+}
+
+# The plugin lives under ~/.config/omarchy/plugins, which is not on anyone's
+# PATH. One symlink into ~/.local/bin makes `ress` a real command; the plugin
+# folder itself stays symlink-free, which the manifest validator requires.
+cmd_link() {
+  local target="$HOME/.local/bin/ress"
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$SELF_DIR/ress" "$target"
+  printf 'Linked %s -> %s\n' "$target" "$SELF_DIR/ress"
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) printf 'Run: %sress doctor%s\n' "$c_green" "$c_reset" ;;
+    *) printf '%s~/.local/bin is not on your PATH. Add it to ~/.bashrc:%s\n  export PATH="$HOME/.local/bin:$PATH"\n' "$c_yellow" "$c_reset" ;;
+  esac
+}
+
+cmd_doctor() {
+  local problems=0
+  printf '%sResurrect doctor%s\n\n' "$c_bold" "$c_reset"
+  check() {
+    if eval "$2" >/dev/null 2>&1; then
+      printf '  %s✓%s %s\n' "$c_green" "$c_reset" "$1"
+    else
+      printf '  %s✗%s %s%s\n' "$c_red" "$c_reset" "$1" "${3:+ — $3}"
+      problems=$((problems + 1))
+    fi
+  }
+  check "git"            "have git"
+  check "rsync"          "have rsync"
+  check "jq"             "have jq"
+  check "pacman"         "have pacman"
+  check "yay (AUR)"      "have yay"       "AUR packages will be skipped on restore"
+  check "age (secrets)"  "have age"       "optional; needed only for the secrets category"
+  check "omarchy CLI"    "have omarchy"
+  check "shell running"  "omarchy-shell shell ping" "the panel needs omarchy-shell; the CLI does not"
+  resolve_vault
+  check "vault"          "[[ -d '$VAULT/.git' ]]" "run: ress init"
+  check "git identity"   "git config --global user.email"
+  check "ress on PATH"   "command -v ress" "run: $SELF_DIR/ress link"
+  printf '\n'
+  (( problems == 0 )) && printf '%sReady.%s\n' "$c_green" "$c_reset" || printf '%s%d problems.%s\n' "$c_yellow" "$problems" "$c_reset"
+  return 0
+}
+
+cmd_diff() {
+  resolve_vault
+  [[ -d $VAULT/.git ]] || die "no vault at $VAULT"
+  local tmp; tmp=$(mktemp -d); trap 'rm -rf "$tmp"' RETURN
+  pacman -Qqen | sort >"$tmp/native.now"
+  if [[ -f $VAULT/packages/native.txt ]]; then
+    local added removed
+    added=$(comm -23 "$tmp/native.now" <(sort -u "$VAULT/packages/native.txt") || true)
+    removed=$(comm -13 "$tmp/native.now" <(sort -u "$VAULT/packages/native.txt") || true)
+    [[ -n $added ]] && printf '%sInstalled since the last backup:%s\n%s\n\n' "$c_bold" "$c_reset" "$(sed 's/^/  + /' <<<"$added")"
+    [[ -n $removed ]] && printf '%sRemoved since the last backup:%s\n%s\n\n' "$c_bold" "$c_reset" "$(sed 's/^/  - /' <<<"$removed")"
+  fi
+  git_vault status --short 2>/dev/null | head -40
+}
+
+# ============================================================ SHARE / APPLY
+#
+# A loadout is your setup with your data removed: what is installed, not what
+# is in your files. The format is one JSON file with a fixed set of keys, all
+# of them names and URLs. There is no field that holds file contents and no
+# field that holds a command, so a profile cannot carry a secret and cannot
+# carry a script — not by policy, but because there is nowhere to put one.
+
+PROFILE_SCHEMA=1
+PROFILE_DIR_DEFAULT="${XDG_DATA_HOME:-$HOME/.local/share}/ress/profile"
+APPLY_WORK=""
+
+# Anything read out of someone else's profile passes through these before it
+# reaches a command line. A name that does not match is dropped, not quoted.
+valid_pkg()   { [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9@._+-]{0,127}$ ]]; }
+valid_id()    { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] && [[ $1 != *".."* ]]; }
+valid_theme() { [[ $1 =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] && [[ $1 != *".."* ]]; }
+valid_label() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9\ ._+\&-]{0,63}$ ]]; }
+valid_https() { [[ $1 =~ ^https://[A-Za-z0-9._~:/?\#@!\$\&\(\)*+,\;=%-]{3,512}$ ]]; }
+
+RESS_HOST="ress.sh"
+
+# ress.sh is a redirector and nothing else — no account, no upload, no copy of
+# your profile. `ress.sh/gh/you/repo` means `github.com/you/repo` and is
+# resolved here, on your machine, before anything touches the network. The
+# short form exists so a loadout fits in a message; the long form always works.
+normalize_source() {
+  local src="$1"
+  [[ -e $src ]] && { printf '%s' "$src"; return 0; }
+
+  src="${src#http://}"
+  src="${src#https://}"
+  src="${src#www.}"
+  src="${src%/}"
+
+  case "$src" in
+    "$RESS_HOST"/gh/*) src="github.com/${src#"$RESS_HOST"/gh/}" ;;
+    "$RESS_HOST"/*)    src="github.com/${src#"$RESS_HOST"/}" ;;
+    gh/*)              src="github.com/${src#gh/}" ;;
+    github.com/*|gitlab.com/*|codeberg.org/*|raw.githubusercontent.com/*) ;;
+    */*/*) ;;
+    */*)               src="github.com/$src" ;;
+  esac
+  printf 'https://%s' "$src"
+}
+
+# The paste-me form of a repo URL, for `ress share`.
+ress_link() {
+  local url="$1"
+  url="${url%.git}"
+  url="${url#git@github.com:}"
+  url="${url#https://github.com/}"
+  url="${url#http://github.com/}"
+  [[ $url == "$1" ]] && { printf '%s' "$1"; return 0; }
+  printf '%s/gh/%s' "$RESS_HOST" "$url"
+}
+
+collect_webapps_json() {
+  local file exec_line url name icon
+  for file in "$HOME"/.local/share/applications/*.desktop; do
+    [[ -f $file ]] || continue
+    exec_line=$(sed -n 's/^Exec=//p' "$file" | head -1)
+    # Only the plain launcher form travels. A web app with a custom Exec is a
+    # command, and commands are exactly what a profile must not be able to move.
+    [[ $exec_line == "omarchy-launch-webapp "* ]] || continue
+    url="${exec_line#omarchy-launch-webapp }"
+    name=$(sed -n 's/^Name=//p' "$file" | head -1)
+    icon=$(sed -n 's/^Icon=//p' "$file" | head -1)
+    valid_https "$url" || continue
+    valid_label "$name" || continue
+    jq -nc --arg name "$name" --arg url "$url" --arg icon "$icon" '$ARGS.named'
+  done | jq -s '.'
+}
+
+collect_plugins_json() {
+  local dir id url
+  for dir in "$HOME"/.config/omarchy/plugins/*/; do
+    [[ -f $dir/manifest.json ]] || continue
+    id=$(jq -r '.id // empty' "$dir/manifest.json" 2>/dev/null) || continue
+    url=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
+    [[ -n $id && -n $url ]] || continue
+    valid_id "$id" || continue
+    valid_https "$url" || continue
+    jq -nc --arg id "$id" --arg url "$url" '$ARGS.named'
+  done | jq -s '.'
+}
+
+cmd_share() {
+  local out="$PROFILE_DIR_DEFAULT" name="" description=""
+  while (( $# > 0 )); do
+    case "$1" in
+      --out) out="${2:-}"; shift 2 ;;
+      --name) name="${2:-}"; shift 2 ;;
+      --description) description="${2:-}"; shift 2 ;;
+      *) die "unknown share option: $1" ;;
+    esac
+  done
+  [[ -n $name ]] || name="$(whoami)'s Omarchy"
+
+  emit "BEGIN|share|$out"
+  step_start share "Reading this machine"
+
+  local theme="" theme_url=""
+  [[ -f $HOME/.local/state/omarchy/current/theme.name ]] && theme=$(<"$HOME/.local/state/omarchy/current/theme.name")
+  theme="${theme//[[:space:]]/}"
+  valid_theme "$theme" || theme=""
+  [[ -n $theme && -d $HOME/.config/omarchy/themes/$theme ]] &&
+    theme_url=$(git -C "$HOME/.config/omarchy/themes/$theme" remote get-url origin 2>/dev/null || true)
+  valid_https "$theme_url" || theme_url=""
+
+  mkdir -p "$out"
+  jq -n \
+    --argjson schemaVersion "$PROFILE_SCHEMA" \
+    --arg kind "omarchy-loadout" \
+    --arg name "$name" \
+    --arg author "$(git config --global user.name 2>/dev/null || whoami)" \
+    --arg description "$description" \
+    --arg createdAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg omarchy "$( [[ -f /usr/share/omarchy/version ]] && cat /usr/share/omarchy/version || echo unknown )" \
+    --argjson native "$(pacman -Qqen | jq -Rs 'split("\n") | map(select(length > 0))')" \
+    --argjson aur "$(pacman -Qqem | jq -Rs 'split("\n") | map(select(length > 0))')" \
+    --argjson plugins "$(collect_plugins_json)" \
+    --argjson webapps "$(collect_webapps_json)" \
+    --arg themeName "$theme" \
+    --arg themeUrl "$theme_url" \
+    '{schemaVersion: $schemaVersion, kind: $kind, name: $name, author: $author,
+      description: $description, createdAt: $createdAt, omarchy: $omarchy,
+      packages: {native: $native, aur: $aur},
+      plugins: $plugins, webapps: $webapps,
+      theme: {name: $themeName, url: $themeUrl}}' >"$out/profile.json"
+
+  local n_pkg n_aur n_plug n_web
+  n_pkg=$(jq '.packages.native | length' "$out/profile.json")
+  n_aur=$(jq '.packages.aur | length' "$out/profile.json")
+  n_plug=$(jq '.plugins | length' "$out/profile.json")
+  n_web=$(jq '.webapps | length' "$out/profile.json")
+
+  cat >"$out/README.md" <<PROFILE_README
+# $name
+
+An [Omarchy](https://omarchy.org) loadout: $n_pkg packages, $n_aur from the AUR,
+$n_plug shell plugins, $n_web web apps, on the \`$theme\` theme.
+
+Make your machine look like this one:
+
+\`\`\`bash
+ress apply <this-repo-url>
+\`\`\`
+
+It shows you everything it would install and asks before it installs any of it.
+
+This profile is a package list, not a backup. It contains no dotfiles, no keys,
+and nothing from a home directory — the format has no field that could hold them.
+PROFILE_README
+
+  if [[ ! -d $out/.git ]]; then
+    git -C "$out" init -q -b main
+    git -C "$out" add -A
+    git -C "$out" -c commit.gpgsign=false commit -q -m "Loadout: $name" 2>/dev/null || true
+  else
+    git -C "$out" add -A
+    git -C "$out" diff --cached --quiet ||
+      git -C "$out" -c commit.gpgsign=false commit -q -m "Update loadout" 2>/dev/null || true
+  fi
+
+  step_ok share "$(plural "$n_pkg" package), $n_aur AUR, $(plural "$n_plug" plugin), $(plural "$n_web" "web app")"
+
+  local origin link
+  origin=$(git -C "$out" remote get-url origin 2>/dev/null || true)
+  link=""
+  [[ -n $origin ]] && link=$(ress_link "$origin")
+  if [[ -n $link ]]; then
+    CFG[PROFILE_URL]="$link"
+    save_config
+  fi
+  emit "DONE|ok|$out"
+
+  if (( ! PORCELAIN )); then
+    printf '\n%sLoadout written to %s%s\n\n' "$c_bold" "$out" "$c_reset"
+    if [[ -n $link ]]; then
+      printf 'Share this line:\n\n  %sress apply %s%s\n\n' "$c_green" "$link" "$c_reset"
+    else
+      printf 'Push it to a public repo, then share the one-liner:\n\n'
+      printf '  %scd %s\n  git remote add origin git@github.com:you/my-omarchy-loadout.git\n  git push -u origin main%s\n\n' "$c_dim" "$out" "$c_reset"
+      printf '  %sress apply https://github.com/you/my-omarchy-loadout%s\n\n' "$c_green" "$c_reset"
+    fi
+  fi
+}
+
+# ------------------------------------------------------------------- apply
+
+fetch_profile() {
+  local source="$1" dest="$2"
+  if [[ -f $source ]]; then
+    cp "$source" "$dest/profile.json"
+  elif [[ -d $source && -f $source/profile.json ]]; then
+    cp "$source/profile.json" "$dest/profile.json"
+  elif [[ $source == *.json ]]; then
+    valid_https "$source" || die "profile URLs must be https"
+    curl -fsSL --max-time 20 -o "$dest/profile.json" "$source" || die "could not fetch $source"
+  else
+    valid_https "$source" || die "profile URLs must be https"
+    git clone -q --depth 1 "$source" "$dest/repo" 2>/dev/null || die "could not clone $source"
+    [[ -f $dest/repo/profile.json ]] || die "no profile.json at the root of $source"
+    cp "$dest/repo/profile.json" "$dest/profile.json"
+  fi
+  jq -e . "$dest/profile.json" >/dev/null 2>&1 || die "profile.json is not valid JSON"
+  local schema kind
+  schema=$(jq -r '.schemaVersion // 0' "$dest/profile.json")
+  kind=$(jq -r '.kind // ""' "$dest/profile.json")
+  [[ $kind == "omarchy-loadout" ]] || die "not an Omarchy loadout (kind: ${kind:-missing})"
+  (( schema == PROFILE_SCHEMA )) || die "loadout schema $schema is not readable by Resurrect $VERSION"
+}
+
+cmd_apply() {
+  local source="${1:-}"
+  [[ -n $source ]] || die "usage: ress apply <ress.sh/gh/user/repo | git-url | profile.json>"
+  source=$(normalize_source "$source")
+  shift || true
+  while (( $# > 0 )); do
+    case "$1" in
+      --restart) shift ;;
+      *) die "unknown apply option: $1" ;;
+    esac
+  done
+
+  APPLY_WORK=$(mktemp -d)
+  trap 'rm -rf "${APPLY_WORK:-}"' EXIT
+  local work="$APPLY_WORK"
+  step_start apply "Fetching the loadout"
+  fetch_profile "$source" "$work"
+  local profile="$work/profile.json"
+
+  local name author created
+  name=$(jq -r '.name // "Untitled"' "$profile")
+  author=$(jq -r '.author // "unknown"' "$profile")
+  created=$(jq -r '.createdAt // "?"' "$profile")
+  step_ok apply "$name by $author ($created)"
+
+  # ------------------------------------------------------------- the preview
+  #
+  # Everything below is computed and shown before anything is installed. This
+  # is the whole safety story: you see the exact list, and nothing outside the
+  # list can happen, because apply only knows four verbs.
+
+  local installed; installed=$(mktemp); pacman -Qq | sort >"$installed"
+  local want_native want_aur missing_native missing_aur
+  want_native=$(jq -r '.packages.native[]? // empty' "$profile" | while read -r p; do valid_pkg "$p" && echo "$p"; done | sort -u)
+  want_aur=$(jq -r '.packages.aur[]? // empty' "$profile" | while read -r p; do valid_pkg "$p" && echo "$p"; done | sort -u)
+  missing_native=$(comm -23 <(printf '%s\n' "$want_native" | grep -v '^$' || true) "$installed" || true)
+  missing_aur=$(comm -23 <(printf '%s\n' "$want_aur" | grep -v '^$' || true) "$installed" || true)
+  rm -f "$installed"
+
+  local n_native n_aur
+  n_native=$(printf '%s' "$missing_native" | grep -c . || true)
+  n_aur=$(printf '%s' "$missing_aur" | grep -c . || true)
+
+  local plugin_rows=() webapp_rows=() theme_name theme_url
+  local id url label
+  while IFS=$'\t' read -r id url; do
+    [[ -n $id ]] || continue
+    valid_id "$id" && valid_https "$url" || continue
+    [[ -d $HOME/.config/omarchy/plugins/$id ]] && continue
+    plugin_rows+=("$id"$'\t'"$url")
+  done < <(jq -r '.plugins[]? | [.id, .url] | @tsv' "$profile")
+
+  while IFS=$'\t' read -r label url id; do
+    [[ -n $label ]] || continue
+    valid_label "$label" && valid_https "$url" || continue
+    [[ -f $HOME/.local/share/applications/$label.desktop ]] && continue
+    webapp_rows+=("$label"$'\t'"$url"$'\t'"$id")
+  done < <(jq -r '.webapps[]? | [.name, .url, (.icon // "")] | @tsv' "$profile")
+
+  theme_name=$(jq -r '.theme.name // ""' "$profile"); valid_theme "$theme_name" || theme_name=""
+  theme_url=$(jq -r '.theme.url // ""' "$profile");   valid_https "$theme_url"  || theme_url=""
+
+  local current_theme=""
+  [[ -f $HOME/.local/state/omarchy/current/theme.name ]] && current_theme=$(<"$HOME/.local/state/omarchy/current/theme.name")
+  current_theme="${current_theme//[[:space:]]/}"
+  [[ $theme_name == "$current_theme" ]] && theme_name=""
+
+  local total=$(( n_native + n_aur + ${#plugin_rows[@]} + ${#webapp_rows[@]} ))
+  if (( total == 0 )) && [[ -z $theme_name ]]; then
+    printf '\n%s%s%s — by %s\n\n' "$c_bold" "$name" "$c_reset" "$author"
+    printf '%sYou already have everything in this loadout.%s\n' "$c_green" "$c_reset"
+    return 0
+  fi
+
+  printf '\n%s%s%s — by %s\n' "$c_bold" "$name" "$c_reset" "$author"
+  printf '%s%s%s\n\n' "$c_dim" "$(jq -r '.description // ""' "$profile")" "$c_reset"
+
+  printf '%sThis will install:%s\n\n' "$c_bold" "$c_reset"
+  if (( n_native > 0 )); then
+    printf '  %s%s from the Arch repos%s\n' "$c_green" "$(plural "$n_native" package)" "$c_reset"
+    printf '%s\n' "$missing_native" | fmt -w 76 | sed 's/^/      /'
+  fi
+  if (( n_aur > 0 )); then
+    printf '  %s%s from the AUR%s\n' "$c_yellow" "$(plural "$n_aur" package)" "$c_reset"
+    printf '%s\n' "$missing_aur" | fmt -w 76 | sed 's/^/      /'
+  fi
+  if (( ${#plugin_rows[@]} > 0 )); then
+    printf '  %s%s%s\n' "$c_green" "$(plural "${#plugin_rows[@]}" "shell plugin")" "$c_reset"
+    printf '%s\n' "${plugin_rows[@]}" | awk -F'\t' '{printf "      %-32s %s\n", $1, $2}'
+  fi
+  if (( ${#webapp_rows[@]} > 0 )); then
+    printf '  %s%s%s\n' "$c_green" "$(plural "${#webapp_rows[@]}" "web app")" "$c_reset"
+    printf '%s\n' "${webapp_rows[@]}" | awk -F'\t' '{printf "      %-32s %s\n", $1, $2}'
+  fi
+  [[ -n $theme_name ]] && printf '  %stheme%s %s\n' "$c_green" "$c_reset" "$theme_name"
+
+  printf '\n%sThis will not:%s remove anything, touch your dotfiles, run any script\n' "$c_bold" "$c_reset"
+  printf '  from the profile, or read anything outside the four actions above.\n\n'
+
+  if (( DRY_RUN )); then
+    printf '%sDry run — nothing was installed.%s\n' "$c_dim" "$c_reset"
+    return 0
+  fi
+  confirm "Apply this loadout?" || die "cancelled"
+
+  # ------------------------------------------------------------- the actions
+
+  if (( n_native > 0 )); then
+    step_start apply "Installing $n_native packages"
+    # shellcheck disable=SC2086
+    sudo pacman -S --needed --noconfirm $missing_native &&
+      step_ok apply "repo packages installed" ||
+      { step_fail apply "some repo packages failed"; RESTORE_FAILED=1; }
+  fi
+  if (( n_aur > 0 )) && have yay; then
+    step_start apply "Building $n_aur AUR packages"
+    # shellcheck disable=SC2086
+    yay -S --needed --noconfirm --answerclean None --answerdiff None $missing_aur ||
+      step_warn apply "some AUR packages failed"
+  elif (( n_aur > 0 )); then
+    step_warn apply "yay is not installed; skipped $n_aur AUR packages"
+  fi
+
+  local row
+  for row in "${plugin_rows[@]:-}"; do
+    [[ -n $row ]] || continue
+    IFS=$'\t' read -r id url <<<"$row"
+    omarchy plugin add "$url" --enable --yes >/dev/null 2>&1 &&
+      step_ok apply "plugin $id" ||
+      step_warn apply "could not add plugin $id"
+  done
+
+  for row in "${webapp_rows[@]:-}"; do
+    [[ -n $row ]] || continue
+    IFS=$'\t' read -r label url id <<<"$row"
+    # Rebuilt through the real installer from a name, a URL and an icon name —
+    # never by copying a .desktop file, which could carry any Exec at all.
+    omarchy webapp install "$label" "$url" "${id:-$url}" >/dev/null 2>&1 &&
+      step_ok apply "web app $label" ||
+      step_warn apply "could not add web app $label"
+  done
+
+  if [[ -n $theme_name ]]; then
+    if [[ ! -d $HOME/.config/omarchy/themes/$theme_name ]] && [[ -n $theme_url ]]; then
+      git clone -q --depth 1 "$theme_url" "$HOME/.config/omarchy/themes/$theme_name" 2>/dev/null || true
+    fi
+    omarchy theme set "$theme_name" >/dev/null 2>&1 &&
+      step_ok apply "theme $theme_name" ||
+      step_warn apply "theme $theme_name is not available here"
+  fi
+
+  emit "DONE|ok|apply complete"
+  printf '\n%sLoadout applied.%s Your files and settings were not touched.\n' "$c_bold" "$c_reset"
+}
+
+# ==================================================================== USAGE
+
+usage() {
+  cat <<USAGE
+${c_bold}Resurrect${c_reset} $VERSION — capture an Omarchy machine, replay it onto a fresh one.
+
+  ${c_bold}ress backup${c_reset} [-m MSG] [--push] [--secrets]
+      Capture this machine into the vault and commit it.
+
+  ${c_bold}ress restore${c_reset} [--from GIT_URL] [--only LIST] [--skip LIST] [--dry-run]
+      Replay a vault onto this machine. Resumable; rerun to continue.
+
+  ${c_bold}ress share${c_reset} [--name NAME] [--out DIR]
+      Export a loadout: the package, plugin, web app and theme list, with
+      nothing from your home directory. Push it and share the URL.
+
+  ${c_bold}ress apply${c_reset} <git-url> [--dry-run]
+      Install someone else's loadout. Shows the full list and asks first.
+
+  ${c_bold}ress status${c_reset} [--json]      What is captured, and when.
+  ${c_bold}ress diff${c_reset}                 What has changed since the last backup.
+  ${c_bold}ress init${c_reset} [--remote URL]   Create the vault.
+  ${c_bold}ress set${c_reset} KEY=VALUE         Change a setting.
+  ${c_bold}ress secrets${c_reset} <init|list|add|enable|disable>
+  ${c_bold}ress doctor${c_reset}                Check this machine is ready.
+  ${c_bold}ress link${c_reset}                  Put `ress` on your PATH (~/.local/bin).
+
+Loadout links are ress.sh/gh/<user>/<repo>, which is a redirect to GitHub and
+nothing else — resolved on this machine, before any request is made. Plain
+GitHub URLs work everywhere a ress.sh link does.
+
+Categories: ${CATEGORIES[*]}
+Config:     $CONFIG_FILE
+USAGE
+}
+
+# ================================================================= DISPATCH
+
+VAULT_OVERRIDE=""
+ARGS=()
+while (( $# > 0 )); do
+  case "$1" in
+    --vault) VAULT_OVERRIDE="${2:-}"; shift 2 ;;
+    --porcelain) PORCELAIN=1; shift ;;
+    --dry-run|-n) DRY_RUN=1; shift ;;
+    --yes|-y) ASSUME_YES=1; shift ;;
+    --version) printf '%s\n' "$VERSION"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+
+load_config
+set -- "${ARGS[@]:-}"
+command="${1:-status}"
+shift || true
+
+case "$command" in
+  backup)  cmd_backup "$@" ;;
+  restore) cmd_restore "$@" ;;
+  share)   cmd_share "$@" ;;
+  apply)   cmd_apply "$@" ;;
+  status)  cmd_status "$@" ;;
+  diff)    cmd_diff "$@" ;;
+  init)    cmd_init "$@" ;;
+  set)     cmd_set "$@" ;;
+  secrets) cmd_secrets "$@" ;;
+  doctor)  cmd_doctor "$@" ;;
+  link)    cmd_link "$@" ;;
+  ""|help) usage ;;
+  *)       die "unknown command: $command (try --help)" ;;
+esac

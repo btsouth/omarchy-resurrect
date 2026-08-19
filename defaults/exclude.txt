@@ -1,0 +1,34 @@
+# Resurrect — default exclusions, applied to every captured path.
+#
+# rsync-style patterns. Add your own in ~/.config/ress/exclude.
+# The credential entries below are the reason this file exists: a dotfile
+# directory is a fine thing to sync between machines right up until it isn't.
+
+# ---- caches and build output ----------------------------------------------
+**/.git/
+**/node_modules/
+**/__pycache__/
+**/.venv/
+**/venv/
+**/target/
+**/dist/
+**/build/
+**/.cache/
+**/Cache/
+**/*.log
+**/*.sock
+**/*.pid
+
+# ---- credentials: never leave the machine in the clear ---------------------
+**/hosts.yml
+**/credentials
+**/credentials.json
+**/*.key
+**/*.pem
+**/*_token
+**/token.json
+**/.netrc
+**/known_hosts
+
+# systemd enable-state is captured declaratively, not as symlink farms
+**/*.wants/
