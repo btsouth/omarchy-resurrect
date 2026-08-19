@@ -162,6 +162,11 @@ Apply this loadout? [y/N]
 A loadout carries Resurrect itself, so whoever applies yours can immediately
 share their own.
 
+A ress.sh link is expanded to a GitHub URL **on your machine, before any
+request is made** — so `ress apply` never actually talks to ress.sh, and a short
+link works whether or not the shortener is reachable. Plain GitHub URLs work
+everywhere a short link does.
+
 `ress.sh/gh/<user>/<repo>` is a redirect to `github.com/<user>/<repo>` and
 nothing else — no account, no upload, no copy of your profile. It is resolved
 **on your machine, before any request is made**, and plain GitHub URLs work

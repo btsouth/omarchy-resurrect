@@ -48,7 +48,8 @@ if you are testing honestly, it will not.
 From a TTY, before you have touched anything:
 
 ```bash
-time bash -c 'curl -fsSL https://ress.sh/bootstrap | bash -s -- https://github.com/you/my-omarchy-vault'
+time bash -c 'curl -fsSL https://raw.githubusercontent.com/tsouth89/omarchy-resurrect/main/bin/resurrect-bootstrap \
+  | bash -s -- https://github.com/you/my-omarchy-vault'
 ```
 
 That single command installs Resurrect, clones the vault, and replays it.
