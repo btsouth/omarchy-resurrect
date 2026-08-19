@@ -60,7 +60,7 @@ note()       { emit "LOG|$1";           (( PORCELAIN )) || printf '  %s%s%s\n' "
 
 die() {
   emit "DONE|fail|$*"
-  printf '%sresurrect: %s%s\n' "$c_red" "$*" "$c_reset" >&2
+  printf '%sress: %s%s\n' "$c_red" "$*" "$c_reset" >&2
   exit 1
 }
 
@@ -997,7 +997,84 @@ cmd_doctor() {
   return 0
 }
 
+# What a restore would actually cost on a *fresh Omarchy*, rather than on a bare
+# Arch install. Omarchy ships its own package manifest, so the honest number is
+# your explicit set minus what the ISO already lays down — and that difference,
+# not the whole list, is everything a restore has to fetch.
+STOCK_LISTS=(/usr/share/omarchy/install/omarchy-base.packages /usr/share/omarchy/install/omarchy-other.packages)
+
+stock_packages() {
+  # The existence check has to happen outside the pipeline: every stage of a
+  # pipeline runs in its own subshell, so a flag set in the loop never makes it
+  # back out here.
+  local list present=()
+  for list in "${STOCK_LISTS[@]}"; do
+    [[ -f $list ]] && present+=("$list")
+  done
+  (( ${#present[@]} > 0 )) || return 1
+  {
+    sed -e 's/#.*//' -e 's/[[:space:]]//g' "${present[@]}"
+    # The ISO pacstraps the base meta-packages too. They are not in the manifest
+    # but they are certainly on a fresh install, and counting them would inflate
+    # the estimate with things like sudo and mkinitcpio. `base` is a package
+    # rather than a group on modern Arch, so ask for its dependencies.
+    if have expac; then
+      expac -S '%E' base base-devel 2>/dev/null | tr ' ' '\n' || true
+    fi
+    pacman -Sgq base base-devel 2>/dev/null || true
+    # `omarchy` itself and what it pulls in are on every Omarchy machine, along
+    # with the bootloader and initramfs pieces the installer lays down outside
+    # the manifest.
+    printf '%s\n' omarchy mkinitcpio efibootmgr
+    if have expac; then
+      expac -S '%E' omarchy 2>/dev/null | tr ' ' '\n' || true
+    fi
+  } | grep -v '^$' | sort -u
+}
+
+cmd_diff_stock() {
+  resolve_vault
+  # No RETURN trap here: it would fire after `stock` has left scope, and under
+  # `set -u` that turns a clean run into an unbound-variable error.
+  local stock; stock=$(mktemp)
+  if ! stock_packages >"$stock"; then
+    rm -f "$stock"
+    die "no Omarchy package manifest on this machine (expected ${STOCK_LISTS[0]})"
+  fi
+
+  local mine
+  if [[ -f $VAULT/packages/native.txt ]]; then
+    mine=$(sort -u "$VAULT/packages/native.txt" "$VAULT/packages/foreign.txt" 2>/dev/null)
+  else
+    mine=$(pacman -Qqe | sort -u)
+  fi
+
+  local extra; extra=$(comm -23 <(printf '%s\n' "$mine") "$stock" || true)
+  local n_mine n_stock n_extra
+  n_mine=$(printf '%s' "$mine" | grep -c . || true)
+  n_stock=$(count_lines "$stock")
+  n_extra=$(printf '%s' "$extra" | grep -c . || true)
+
+  printf '%sDistance from a stock Omarchy install%s\n\n' "$c_bold" "$c_reset"
+  printf '  %-28s %s\n' "Omarchy ships" "$(plural "$n_stock" package)"
+  printf '  %-28s %s\n' "you have explicitly" "$(plural "$n_mine" package)"
+  printf '  %-28s %s%s%s\n\n' "a restore would fetch" "$c_green" "$(plural "$n_extra" package)" "$c_reset"
+
+  if (( n_extra > 0 )); then
+    printf '%s\n' "$extra" | fmt -w 72 | sed 's/^/  /'
+    printf '\n'
+    if have expac; then
+      local mb
+      mb=$(expac -S '%k' $extra 2>/dev/null | awk '{s+=$1} END {printf "%.0f", s/1024/1024}')
+      [[ -n $mb ]] && printf '  %s≈ %s MB to download.%s\n' "$c_dim" "$mb" "$c_reset"
+    fi
+  fi
+  printf '  %sAn estimate: anything already installed is skipped at restore time.\n  Everything else in the vault replays without the network.%s\n' "$c_dim" "$c_reset"
+  rm -f "$stock"
+}
+
 cmd_diff() {
+  if [[ ${1:-} == --stock ]]; then cmd_diff_stock; return $?; fi
   resolve_vault
   [[ -d $VAULT/.git ]] || die "no vault at $VAULT"
   local tmp; tmp=$(mktemp -d); trap 'rm -rf "$tmp"' RETURN
@@ -1401,7 +1478,8 @@ ${c_bold}Resurrect${c_reset} $VERSION — capture an Omarchy machine, replay it 
       Install someone else's loadout. Shows the full list and asks first.
 
   ${c_bold}ress status${c_reset} [--json]      What is captured, and when.
-  ${c_bold}ress diff${c_reset}                 What has changed since the last backup.
+  ${c_bold}ress diff${c_reset} [--stock]        What changed since the last backup, or how far
+                                    this machine is from a stock Omarchy install.
   ${c_bold}ress init${c_reset} [--remote URL]   Create the vault.
   ${c_bold}ress set${c_reset} KEY=VALUE         Change a setting.
   ${c_bold}ress secrets${c_reset} <init|list|add|enable|disable>

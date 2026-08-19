@@ -17,6 +17,41 @@ ress backup                       # on the machine you like
 ress restore --from <your-vault>  # on the machine that has nothing
 ```
 
+## What it actually costs
+
+Omarchy installs in under a minute because the ISO already carries almost
+everything. That works in your favour on the way back: a restore does not
+reinstall your machine, it fetches the difference.
+
+Measured on the install in the screenshot — 166 explicit packages, 27 config
+paths, 9 web apps:
+
+| | |
+|---|---|
+| Backup | **3 seconds**, a 1.3 MB vault |
+| Restore of everything except packages | **3 seconds** |
+| Packages a fresh Omarchy actually needs | **8 of 166**, ≈ 145 MB |
+
+Resurrect will tell you that number for your own machine, before you ever
+rebuild anything:
+
+```bash
+$ ress diff --stock
+
+Distance from a stock Omarchy install
+
+  Omarchy ships                256 packages
+  you have explicitly          166 packages
+  a restore would fetch        8 packages
+
+  cursor-cli fuse2 gtkmm3 hyprpolkitagent mesa-utils opencode
+  open-vm-tools stably-orca-bin
+
+  ≈ 145 MB to download.
+```
+
+Install in a minute, restore in about another. That is the whole idea.
+
 ---
 
 ## Install
@@ -168,7 +203,8 @@ ress restore [--from URL] [--only LIST]     replay a vault, resumably
 ress share [--name NAME]                    export a shareable loadout
 ress apply <link> [--dry-run]               install someone else's loadout
 ress status [--json]                        what is captured, and when
-ress diff                                   what changed since the last backup
+ress diff [--stock]                         what changed since the last backup,
+                                            or how far this machine is from stock
 ress init [--remote URL]                    create the vault
 ress set KEY=VALUE                          change a setting
 ress secrets <init|list|add|enable|disable>
