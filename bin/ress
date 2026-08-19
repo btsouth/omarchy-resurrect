@@ -1081,16 +1081,29 @@ cmd_diff() {
   if [[ ${1:-} == --stock ]]; then cmd_diff_stock; return $?; fi
   resolve_vault
   [[ -d $VAULT/.git ]] || die "no vault at $VAULT"
-  local tmp; tmp=$(mktemp -d); trap 'rm -rf "$tmp"' RETURN
-  pacman -Qqen | sort >"$tmp/native.now"
+
+  local now added="" removed="" dirty
+  now=$(mktemp)
+  pacman -Qqen | sort >"$now"
   if [[ -f $VAULT/packages/native.txt ]]; then
-    local added removed
-    added=$(comm -23 "$tmp/native.now" <(sort -u "$VAULT/packages/native.txt") || true)
-    removed=$(comm -13 "$tmp/native.now" <(sort -u "$VAULT/packages/native.txt") || true)
-    [[ -n $added ]] && printf '%sInstalled since the last backup:%s\n%s\n\n' "$c_bold" "$c_reset" "$(sed 's/^/  + /' <<<"$added")"
-    [[ -n $removed ]] && printf '%sRemoved since the last backup:%s\n%s\n\n' "$c_bold" "$c_reset" "$(sed 's/^/  - /' <<<"$removed")"
+    added=$(comm -23 "$now" <(sort -u "$VAULT/packages/native.txt") || true)
+    removed=$(comm -13 "$now" <(sort -u "$VAULT/packages/native.txt") || true)
   fi
-  git_vault status --short 2>/dev/null | head -40
+  rm -f "$now"
+
+  [[ -n $added ]] && printf '%sInstalled since the last backup%s\n%s\n\n' \
+    "$c_bold" "$c_reset" "$(fmt -w 72 <<<"$added" | sed 's/^/  + /')"
+  [[ -n $removed ]] && printf '%sRemoved since the last backup%s\n%s\n\n' \
+    "$c_bold" "$c_reset" "$(fmt -w 72 <<<"$removed" | sed 's/^/  - /')"
+
+  dirty=$(git_vault status --short 2>/dev/null | head -40)
+  [[ -n $dirty ]] && printf '%sUncommitted in the vault%s\n%s\n' "$c_bold" "$c_reset" "$(sed 's/^/  /' <<<"$dirty")"
+
+  if [[ -z $added && -z $removed && -z $dirty ]]; then
+    printf '%sNothing has changed since the last backup.%s\n' "$c_green" "$c_reset"
+    printf '%sTry `ress diff --stock` to see how far this machine is from a fresh Omarchy.%s\n' "$c_dim" "$c_reset"
+  fi
+  return 0
 }
 
 # ============================================================ SHARE / APPLY
