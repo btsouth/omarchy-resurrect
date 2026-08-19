@@ -470,7 +470,7 @@ cmd_backup() {
   else
     local subject="${message:-Backup from $(hostname) at $(date '+%Y-%m-%d %H:%M')}"
     git_vault -c commit.gpgsign=false commit -q -m "$subject"
-    step_ok commit "$(git_vault rev-parse --short HEAD)"
+    step_ok commit "saved as $(git_vault rev-parse --short HEAD)"
   fi
 
   if (( push )) || [[ ${CFG[AUTO_PUSH]} == 1 ]]; then
@@ -756,8 +756,12 @@ cmd_restore() {
       git clone -q --depth 1 "$from" "$VAULT" || die "could not clone $from"
       step_ok clone "cloned to $VAULT"
     fi
-    CFG[REMOTE]="$from"
-    save_config
+    # A one-off `--vault` is a scratch restore, not a change of allegiance —
+    # don't rewrite the machine's configured remote for it.
+    if [[ -z ${VAULT_OVERRIDE:-} ]]; then
+      CFG[REMOTE]="$from"
+      save_config
+    fi
   fi
 
   [[ -f $VAULT/resurrect.json ]] || die "no vault at $VAULT — pass --from <git-url> or --vault <dir>"
