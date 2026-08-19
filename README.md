@@ -220,6 +220,37 @@ ress link                                   put `ress` on your PATH
 Every command is non-interactive with `--yes`, and speaks a line protocol with
 `--porcelain` — which is exactly how the panel drives it.
 
+## Dependencies
+
+Everything Resurrect needs is already on a stock Omarchy install:
+
+| | |
+|---|---|
+| Required | `git`, `rsync`, `jq`, `pacman` |
+| Optional | `yay` (AUR packages on restore) · `age` (encrypted secrets) · `expac` (download sizes in `ress diff --stock`) · `wl-clipboard` (copy the share link) |
+
+`ress restore` checks for the required ones before it starts and names the
+missing package if any is absent. `ress doctor` reports the whole list.
+
+## Uninstall
+
+```bash
+omarchy plugin remove tsouth89.resurrect     # removes the plugin and its bar entry
+rm -f ~/.local/bin/ress                      # the PATH symlink, if you made one
+```
+
+That is the whole footprint in the shell. Your captured data is yours and is
+left alone; delete it explicitly if you want it gone:
+
+```bash
+rm -rf ~/.local/share/ress    # the vault and any exported loadout
+rm -rf ~/.config/ress         # settings, include/exclude lists
+rm -rf ~/.local/state/ress    # the last-backup stamp and restore progress
+```
+
+Removing the plugin never touches anything it restored — your dotfiles, packages
+and themes stay exactly as they are.
+
 ## Configuration
 
 One file, `~/.config/ress/config`, read by both the CLI and the panel. There is

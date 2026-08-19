@@ -764,6 +764,13 @@ cmd_restore() {
     fi
   fi
 
+  # Fail on the missing tool now, with its package name, rather than halfway
+  # through a restore on a machine you cannot yet use.
+  local tool missing=()
+  for tool in git rsync jq; do have "$tool" || missing+=("$tool"); done
+  (( ${#missing[@]} == 0 )) ||
+    die "missing: ${missing[*]} — run: sudo pacman -S --needed ${missing[*]}"
+
   [[ -f $VAULT/resurrect.json ]] || die "no vault at $VAULT — pass --from <git-url> or --vault <dir>"
   local schema; schema=$(jq -r '.schemaVersion // 0' "$VAULT/resurrect.json")
   (( schema == SCHEMA )) || die "vault schema $schema is not readable by Resurrect $VERSION"
