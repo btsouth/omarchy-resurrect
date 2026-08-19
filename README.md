@@ -6,6 +6,11 @@
   <img src="docs/preview.png" alt="The Resurrect panel open over an Omarchy desktop, next to a terminal running ress backup">
 </p>
 
+<p align="center">
+  <img src="docs/demo.gif" width="420" alt="Backing up a machine and exporting a shareable loadout, in real time">
+  <br><em>A real backup: 166 packages, 27 config paths, 9 web apps — three seconds.</em>
+</p>
+
 Omarchy installs in about a minute. Then you spend the evening putting your
 things back: the packages, the dotfiles, the theme, the web apps, the plugins,
 the twelve small decisions you have forgotten you ever made.
