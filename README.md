@@ -190,7 +190,7 @@ keyboard-driveable:
 Bind it if you like:
 
 ```lua
-o.bind("SUPER + SHIFT + B", "Resurrect", hl.dsp.exec("omarchy-shell resurrect-panel toggle"))
+o.bind("SUPER + SHIFT + B", "Resurrect", hl.dsp.exec("omarchy-shell resurrect toggle"))
 ```
 
 **Backup runs in the panel. Restore opens a terminal.** That is on purpose: a

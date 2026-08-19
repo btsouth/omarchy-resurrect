@@ -224,16 +224,5 @@ Item {
     }
   }
 
-  // The panel talks to whichever instance is loaded; scripts and keybinds talk
-  // to this one.
-  IpcHandler {
-    target: "resurrect"
-    enabled: !root.panelOwned
-
-    function backup(): string { return root.backupNow() ? "started" : "busy" }
-    function status(): string { return root.freshness + " " + root.agoText }
-    function due(): string { return String(root.nextDueIn) }
-  }
-
   Component.onCompleted: if (panelOwned) refresh()
 }

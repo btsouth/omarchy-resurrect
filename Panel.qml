@@ -13,7 +13,7 @@ import "Model.js" as Model
 Panel {
   id: root
   moduleName: "tsouth89.resurrect"
-  ipcTarget: "resurrect-panel"
+  ipcTarget: "resurrect"
   manageIpc: false
 
   // ------------------------------------------------------------------ theme
