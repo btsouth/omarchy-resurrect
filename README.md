@@ -119,6 +119,9 @@ This will not: remove anything, touch your dotfiles, run any script
 Apply this loadout? [y/N]
 ```
 
+A loadout carries Resurrect itself, so whoever applies yours can immediately
+share their own.
+
 `ress.sh/gh/<user>/<repo>` is a redirect to `github.com/<user>/<repo>` and
 nothing else — no account, no upload, no copy of your profile. It is resolved
 **on your machine, before any request is made**, and plain GitHub URLs work
@@ -129,7 +132,7 @@ the line so it fits in a message.
 
 ## The panel
 
-<p align="center"><img src="docs/panel.png" width="520" alt="The Resurrect panel"></p>
+<p align="center"><img src="docs/panel.png" width="420" alt="The Resurrect panel"></p>
 
 A bar icon that dims as your backup gets stale, and a panel that is entirely
 keyboard-driveable:
