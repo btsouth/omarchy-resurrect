@@ -48,13 +48,14 @@ if you are testing honestly, it will not.
 From a TTY, before you have touched anything:
 
 ```bash
-time bash -c 'curl -fsSL https://raw.githubusercontent.com/tsouth89/omarchy-resurrect/main/bin/resurrect-bootstrap \
-  | bash -s -- https://github.com/you/my-omarchy-vault'
+time bash -c '
+  omarchy plugin add https://github.com/tsouth89/omarchy-resurrect --yes &&
+  ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress restore --from https://github.com/you/my-omarchy-vault --yes
+'
 ```
 
-That single command installs Resurrect, clones the vault, and replays it.
 Resurrect prints its own elapsed time at the end; `time` brackets the whole
-thing including the download.
+thing including installing the plugin and cloning the vault.
 
 If the AUR is slow or something times out, run it again — the restore is
 resumable and picks up at the step it stopped on.

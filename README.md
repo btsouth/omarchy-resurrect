@@ -74,14 +74,16 @@ Nothing in Resurrect requires an account, a server, or a service.
 
 ### On a machine that has nothing
 
-One command, from a TTY, before you have a desktop:
+Two commands, from a TTY, before you have a desktop. No pipe into a shell —
+Omarchy's own installer does the fetching, and it validates the manifest and
+warns you before it clones anything:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tsouth89/omarchy-resurrect/main/bin/resurrect-bootstrap \
-  | bash -s -- https://github.com/you/my-omarchy-vault
+omarchy plugin add https://github.com/tsouth89/omarchy-resurrect --yes
+~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress restore --from https://github.com/you/my-omarchy-vault
 ```
 
-It installs Resurrect, clones your vault, and replays it. The restore is
+The second command clones your vault and replays it. The restore is
 **resumable** — if the AUR times out or the power goes, run it again and it
 picks up at the step it stopped on.
 

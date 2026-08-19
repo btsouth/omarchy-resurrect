@@ -5,7 +5,6 @@
 // GitHub and nowhere else; this only shortens the line that points at it.
 
 const REPO = "https://github.com/tsouth89/omarchy-resurrect";
-const RAW = "https://raw.githubusercontent.com/tsouth89/omarchy-resurrect/main";
 
 // Deliberately narrow: GitHub's own character set for owners and repos, and
 // nothing that could turn a path into a different host.
@@ -18,7 +17,6 @@ export default {
     const gh = url.pathname.match(GH);
     if (gh) return Response.redirect(`https://github.com/${gh[1]}/${gh[2]}`, 302);
 
-    if (url.pathname === "/bootstrap") return Response.redirect(`${RAW}/bin/resurrect-bootstrap`, 302);
     if (url.pathname === "/repo") return Response.redirect(REPO, 302);
     if (url.pathname === "/" || url.pathname === "/index.html") {
       return env.ASSETS ? env.ASSETS.fetch(request) : Response.redirect(REPO, 302);

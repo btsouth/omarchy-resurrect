@@ -5,5 +5,4 @@
 # it locally before it makes any request at all.
 
 /gh/*         https://github.com/:splat                                                      302
-/bootstrap    https://raw.githubusercontent.com/tsouth89/omarchy-resurrect/main/bin/resurrect-bootstrap  302
 /repo         https://github.com/tsouth89/omarchy-resurrect                                  302

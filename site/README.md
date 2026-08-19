@@ -4,7 +4,6 @@ The link shortener for Resurrect loadouts. It redirects and does nothing else:
 
 ```
 ress.sh/gh/<user>/<repo>  ->  github.com/<user>/<repo>
-ress.sh/bootstrap         ->  the bootstrap script, raw
 ress.sh/repo              ->  this project
 ```
 

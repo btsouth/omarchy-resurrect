@@ -116,7 +116,8 @@
     for — <a href="/repo">the whole thing is a plugin and a shell script</a>.
   </p>
   <p>Starting from a bare TTY on a fresh install, before you have a desktop:</p>
-<pre><span class="p">$</span> curl -fsSL https://ress.sh/bootstrap | bash -s -- github.com/you/my-omarchy-vault</pre>
+<pre><span class="p">$</span> omarchy plugin add https://github.com/tsouth89/omarchy-resurrect --yes
+<span class="p">$</span> ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress restore --from github.com/you/my-omarchy-vault</pre>
 </section>
 
 <section>
