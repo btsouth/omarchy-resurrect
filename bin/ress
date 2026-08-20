@@ -304,7 +304,7 @@ capture_config() {
     entries+=(".config/autostart")
     local n_autostart; n_autostart=$(find "$HOME/.config/autostart" -type f -name '*.desktop' 2>/dev/null | wc -l)
     (( n_autostart > 0 )) &&
-      step_warn config "capturing $(plural "$n_autostart" "autostart entry") — each one runs at login wherever this vault is restored"
+      step_warn config "capturing $(plural "$n_autostart" "autostart entry" "autostart entries") — each one runs at login wherever this vault is restored"
   fi
 
   local total=${#entries[@]} i=0
@@ -1650,7 +1650,7 @@ report_executable_content() {
   (( menus > 0 ))     && printf '  %s — menu entries are shell commands\n' "$(plural "$menus" "menu extension")"
   (( scripts > 0 ))   && printf '  %s into ~/.local/bin\n' "$(plural "$scripts" script)"
   (( units > 0 ))     && printf '  %s\n' "$(plural "$units" "systemd user unit")"
-  (( autostart > 0 )) && printf '  %s — started automatically when you log in\n' "$(plural "$autostart" "autostart entry")"
+  (( autostart > 0 )) && printf '  %s — started automatically when you log in\n' "$(plural "$autostart" "autostart entry" "autostart entries")"
   (( plugins > 0 ))   && printf '  %s — cloned from git and loaded into the shell\n' "$(plural "$plugins" "shell plugin")"
   (( git_themes > 0 )) && printf '  %s — cloned from git, sourced on every theme change\n' "$(plural "$git_themes" "git theme")"
   printf '%sRestore only a vault you trust as much as the machine it came from.%s\n' "$c_dim" "$c_reset"
@@ -2381,7 +2381,8 @@ cmd_doctor() {
   check "git identity"   ""                        git config --global user.email
   check "ress on PATH"   "run: $SELF_DIR/ress link" command -v ress
   printf '\n'
-  (( problems == 0 )) && printf '%sReady.%s\n' "$c_green" "$c_reset" || printf '%s%d problems.%s\n' "$c_yellow" "$problems" "$c_reset"
+  (( problems == 0 )) && printf '%sReady.%s\n' "$c_green" "$c_reset" ||
+    printf '%s%s.%s\n' "$c_yellow" "$(plural "$problems" problem)" "$c_reset"
   return 0
 }
 
@@ -3051,7 +3052,7 @@ ${c_bold}ress${c_reset} $VERSION — capture an Omarchy machine, replay it onto 
                             exit non-zero if it does not match.
   ${c_bold}ress scan${c_reset} [--json]        Look through the vault for anything shaped
                             like a credential.
-  ${c_bold}ress enable-units${c_reset} [--all] [UNIT...]
+  ${c_bold}ress enable-units${c_reset} [--all|--list] [UNIT...]
                             Turn on the user services a backup recorded,
                             after reading what each one runs.
 

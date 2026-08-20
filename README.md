@@ -232,7 +232,7 @@ ress share [--name NAME]                    export a shareable loadout
 ress apply <link> [--dry-run]               install someone else's loadout
 ress verify [--json]                        check this machine against the vault
 ress scan [--json]                          look for credentials in the vault
-ress enable-units [--all] [UNIT...]         turn on the services a backup recorded
+ress enable-units [--all|--list] [UNIT...]   turn on the services a backup recorded
 ress status [--json]                        what is captured, and when
 ress diff [--stock]                         what changed since the last backup,
                                             or how far this machine is from stock
