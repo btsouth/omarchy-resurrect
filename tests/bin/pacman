@@ -22,13 +22,20 @@ case "${1:-}" in
     exit 1
     ;;
   -Si)
+    # Real pacman prints what it knows and exits 1 if any name was unknown,
+    # rather than stopping at the first one.
     shift
+    rc=0
     for pkg in "$@"; do
-      [[ $pkg == -* ]] && continue
-      grep -qxF "$pkg" "$S/repo-packages.txt" 2>/dev/null || exit 1
-      printf 'Repository      : extra\nName            : %s\nVersion         : 1.0-1\n' "$pkg"
+      [[ $pkg == -* || $pkg == "--" ]] && continue
+      if grep -qxF "$pkg" "$S/repo-packages.txt" 2>/dev/null; then
+        printf 'Repository      : extra\nName            : %s\nVersion         : 1.0-1\n\n' "$pkg"
+      else
+        printf 'error: package \x27%s\x27 was not found\n' "$pkg" >&2
+        rc=1
+      fi
     done
-    exit 0
+    exit $rc
     ;;
   -Sgq) exit 1 ;;   # no such group here; ress treats that as "nothing to add"
   -Sy)  exit 0 ;;   # database refresh always succeeds in the sandbox

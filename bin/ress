@@ -50,6 +50,10 @@ PORCELAIN=0
 DRY_RUN=0
 ASSUME_YES=0
 ALLOW_UNPINNED=0
+# Set by --aur / --no-aur / --review-aur; empty leaves the decision to the AUR
+# setting, which defaults to asking.
+AUR_CHOICE=""
+AUR_REVIEW=0
 
 c_reset=$'\e[0m'; c_dim=$'\e[2m'; c_bold=$'\e[1m'
 c_green=$'\e[32m'; c_red=$'\e[31m'; c_yellow=$'\e[33m'; c_blue=$'\e[34m'
@@ -101,6 +105,9 @@ declare -A CFG=(
   # Restore writes files. The one thing it can *turn on* is a systemd user
   # unit, so that is a separate decision with its own default: ask.
   [ENABLE_UNITS]="ask"
+  # And the one thing it can *build* is an AUR package. Same reasoning, same
+  # default.
+  [AUR]="ask"
 )
 
 load_config() {
@@ -128,7 +135,7 @@ save_config() {
     for key in VAULT REMOTE AUTO_BACKUP AUTO_INTERVAL_HOURS AUTO_PUSH \
       INCLUDE_PACKAGES INCLUDE_CONFIG INCLUDE_OMARCHY INCLUDE_WEBAPPS \
       INCLUDE_PLUGINS INCLUDE_SECRETS SECRETS_MODE SECRETS_RECIPIENT PROFILE_URL \
-      ENABLE_UNITS; do
+      ENABLE_UNITS AUR; do
       printf '%s=%s\n' "$key" "${CFG[$key]}"
     done
   } >"$tmp"
@@ -617,12 +624,184 @@ FIRST_CONTACT=0
 step_done()      { grep -qxF "$1" "$RESTORE_STATE" 2>/dev/null; }
 mark_done()      { printf '%s\n' "$1" >>"$RESTORE_STATE"; }
 
+# A category can end without failing and without being finished: you were asked
+# whether to build seven AUR packages and said no. Marking that done would have
+# the next run skip the very step you deferred; marking it failed would call a
+# decision a fault. So it is neither — it is recorded here, reported at the end,
+# and left for the next run to offer again.
+PARTIAL_STEPS=()
+mark_partial() {
+  local category="$1" reason="$2" existing
+  for existing in "${PARTIAL_STEPS[@]:-}"; do
+    [[ $existing == "$category|"* ]] && return 0
+  done
+  PARTIAL_STEPS+=("$category|$reason")
+}
+was_partial() {
+  local entry
+  for entry in "${PARTIAL_STEPS[@]:-}"; do
+    [[ $entry == "$1|"* ]] && return 0
+  done
+  return 1
+}
+
 # Never clobber in silence. Anything restore overwrites is moved aside first,
 # so a restore onto a machine you actually use is reversible.
 # --safe-links drops any symlink in the vault that points outside the tree, so
 # a crafted vault cannot plant `.config/foo -> /etc` and have later writes
 # follow it out of $HOME.
 RSYNC_SAFE=(-a --safe-links --backup --suffix="$BAK_SUFFIX")
+
+# ==================================================================== AUR
+#
+# Every other package a restore installs is a signed binary from the Arch
+# repositories. An AUR package is a PKGBUILD: a shell script fetched from
+# aur.archlinux.org and run on this machine while it builds. That is the one
+# point where a list of names in a vault becomes somebody else's code running
+# here, so it is the one point that asks first.
+
+# Names that never get built, whoever asks. Checked before the question, since
+# refusing is not a question.
+aur_denied() { merged_list aur-deny | grep -qxF -- "$1"; }
+
+# Which of these names actually exist on aur.archlinux.org. A name in a vault
+# with nothing behind it is the interesting one: a package renamed, deleted, or
+# never there — which is also what a typo and a squat look like from here.
+#
+# Not reaching the AUR is reported and never fatal. This annotates a list; it
+# does not gate one.
+AUR_KNOWN=""
+AUR_PROBED=0
+aur_probe() {
+  AUR_KNOWN=""
+  AUR_PROBED=0
+  have curl || return 1
+  local pending=("$@") chunk=() name encoded url out
+  while (( ${#pending[@]} > 0 )); do
+    chunk=("${pending[@]:0:40}")
+    pending=("${pending[@]:40}")
+    url="https://aur.archlinux.org/rpc/v5/info?"
+    for name in "${chunk[@]}"; do
+      # A `+` in a query string means a space, and plenty of package names have
+      # one. Everything else valid_pkg admits is safe unencoded.
+      encoded="${name//+/%2B}"
+      url+="arg%5B%5D=$encoded&"
+    done
+    # -g: the encoded brackets are part of the URL, not a curl range glob.
+    out=$(curl -gfsSL --max-time 15 -- "${url%&}" 2>/dev/null) || return 1
+    jq -e . >/dev/null 2>&1 <<<"$out" || return 1
+    AUR_KNOWN+=$'\n'$(jq -r '.results[]?.Name // empty' <<<"$out")
+  done
+  AUR_PROBED=1
+  return 0
+}
+
+aur_knows() { grep -qxF -- "$1" <<<"$AUR_KNOWN"; }
+
+# Which of these names the official repositories now carry. A package can move
+# from the AUR into extra, and once it has, building it from a PKGBUILD is the
+# wrong way to get it. One batched call: pacman prints what it knows and exits
+# non-zero for the rest, which is exactly the shape wanted here.
+IN_REPOS=""
+repo_probe() {
+  IN_REPOS=$(pacman -Si -- "$@" 2>/dev/null | sed -n 's/^Name[[:space:]]*: //p' || true)
+}
+
+# What to say about one name beyond the name itself. Empty for the ordinary
+# case, so the list stays readable and the odd entry stands out.
+aur_note() {
+  local name="$1"
+  (( AUR_PROBED )) && ! aur_knows "$name" && { printf 'not on aur.archlinux.org'; return 0; }
+  grep -qxF -- "$name" <<<"$IN_REPOS" && { printf 'now in the official repos'; return 0; }
+  printf ''
+}
+
+# build | review | skip — decided once, by the flag, then the setting, then the
+# person at the terminal. AUR_KEPT holds the names that survived the deny list.
+AUR_MODE="skip"
+AUR_KEPT=()
+aur_gate() {
+  local category="$1"; shift
+  local names=("$@")
+  AUR_KEPT=()
+  AUR_MODE="skip"
+
+  local name denied=()
+  for name in "${names[@]}"; do
+    if aur_denied "$name"; then denied+=("$name"); else AUR_KEPT+=("$name"); fi
+  done
+  (( ${#denied[@]} == 0 )) ||
+    step_warn "$category" "$(plural "${#denied[@]}" "AUR package") on your deny list: ${denied[*]}"
+  (( ${#AUR_KEPT[@]} > 0 )) || return 0
+
+  # Settled without a prompt?
+  local decision="${AUR_CHOICE:-}"
+  if [[ -z $decision ]]; then
+    case "${CFG[AUR]:-ask}" in
+      yes|1|on|true) decision=yes ;;
+      no|0|off|false) decision=no ;;
+      *) decision=ask ;;
+    esac
+  fi
+  if [[ $decision == yes ]]; then
+    AUR_MODE=$( (( AUR_REVIEW )) && printf 'review' || printf 'build' )
+    return 0
+  fi
+  if [[ $decision == no ]]; then
+    step_skip "$category" "$(plural "${#AUR_KEPT[@]}" "AUR package") skipped (AUR=no)"
+    return 0
+  fi
+  if [[ ! -t 0 ]]; then
+    step_skip "$category" "$(plural "${#AUR_KEPT[@]}" "AUR package") skipped — no terminal to ask at; pass --aur to build them"
+    return 0
+  fi
+
+  if ! aur_probe "${AUR_KEPT[@]}"; then
+    note "could not reach aur.archlinux.org to check these names"
+  fi
+  repo_probe "${AUR_KEPT[@]}"
+
+  printf '\n%s%s from the AUR:%s\n\n' "$c_bold" "$(plural "${#AUR_KEPT[@]}" package)" "$c_reset"
+  local note_text
+  for name in "${AUR_KEPT[@]}"; do
+    note_text=$(aur_note "$name")
+    if [[ -n $note_text ]]; then
+      printf '    %-32s %s%s%s\n' "$name" "$c_yellow" "$note_text" "$c_reset"
+    else
+      printf '    %s\n' "$name"
+    fi
+  done
+  printf '\n%sEach one is a PKGBUILD fetched from aur.archlinux.org and run here as it\nbuilds. Nothing signs them and nobody reviews them.%s\n\n' \
+    "$c_dim" "$c_reset"
+  printf '  %s[y]%s build them   %s[r]%s review each PKGBUILD first   %s[N]%s skip\n' \
+    "$c_green" "$c_reset" "$c_blue" "$c_reset" "$c_dim" "$c_reset"
+  local reply
+  read -r -p "  > " reply
+  case "$reply" in
+    [yY]*) AUR_MODE="build" ;;
+    [rR]*) AUR_MODE="review" ;;
+    *)     AUR_MODE="skip"; step_skip "$category" "$(plural "${#AUR_KEPT[@]}" "AUR package") skipped" ;;
+  esac
+  return 0
+}
+
+# The two ways to run the helper. `build` is the unattended one: yay answers its
+# own prompts. `review` is yay's normal interactive flow, where it shows the
+# PKGBUILD and the diff since the last build and waits.
+aur_install() {
+  local category="$1"; shift
+  case "$AUR_MODE" in
+    build)
+      step_start "$category" "Building $(plural "$#" "AUR package")"
+      yay -S --needed --noconfirm --answerclean None --answerdiff None -- "$@"
+      ;;
+    review)
+      step_start "$category" "Building $(plural "$#" "AUR package") — yay will show each PKGBUILD"
+      yay -S --needed -- "$@"
+      ;;
+    *) return 1 ;;
+  esac
+}
 
 restore_packages() {
   local dir="$VAULT/packages"
@@ -652,7 +831,20 @@ restore_packages() {
   step_ok packages "$n_count from the repos, $f_count from the AUR"
 
   if (( DRY_RUN )); then
-    printf '%s\n' "${safe_native[@]}" "${safe_foreign[@]}" | sed 's/^/    /'
+    # Two different things happen to these two lists, so they are never shown
+    # as one list.
+    if (( n_count > 0 )); then
+      printf '  %sfrom the Arch repos%s\n' "$c_dim" "$c_reset"
+      printf '%s\n' "${safe_native[@]}" | fmt -w 68 | sed 's/^/      /'
+    fi
+    if (( f_count > 0 )); then
+      printf '  %sbuilt from the AUR%s\n' "$c_yellow" "$c_reset"
+      local pkg
+      for pkg in "${safe_foreign[@]}"; do
+        if aur_denied "$pkg"; then printf '      %-32s %son your deny list%s\n' "$pkg" "$c_dim" "$c_reset"
+        else printf '      %s\n' "$pkg"; fi
+      done
+    fi
     return 0
   fi
 
@@ -687,19 +879,24 @@ restore_packages() {
   fi
 
   if (( f_count > 0 )); then
-    if have yay; then
-      step_start packages "Building $f_count AUR packages"
-      if yay -S --needed --noconfirm --answerclean None --answerdiff None -- "${safe_foreign[@]}"; then
-        step_ok packages "AUR packages installed"
-      else
-        # A failed build is worth retrying, so this is a failure and not a
-        # warning: a warning would let the category be marked done and the
-        # rerun would skip the very step that did not finish.
-        step_fail packages "some AUR packages failed — see packages/foreign.txt"
-        RESTORE_FAILED=1
-      fi
-    else
+    if ! have yay; then
       step_fail packages "yay is not installed; skipped $f_count AUR packages — run: sudo pacman -S yay, then rerun"
+      RESTORE_FAILED=1
+      return 0
+    fi
+    aur_gate packages "${safe_foreign[@]}"
+    if [[ $AUR_MODE == skip ]]; then
+      # Not a failure: you were asked and said no. Not done either, so the next
+      # run asks again rather than walking past it.
+      (( ${#AUR_KEPT[@]} > 0 )) &&
+        mark_partial packages "$(plural "${#AUR_KEPT[@]}" "AUR package") not built — ress restore --only packages --aur"
+    elif aur_install packages "${AUR_KEPT[@]}"; then
+      step_ok packages "AUR packages installed"
+    else
+      # A failed build is worth retrying, so this is a failure and not a
+      # warning: a warning would let the category be marked done and the
+      # rerun would skip the very step that did not finish.
+      step_fail packages "some AUR packages failed — see packages/foreign.txt"
       RESTORE_FAILED=1
     fi
   fi
@@ -1185,19 +1382,27 @@ report_executable_content() {
 # through the same validators the restore itself uses, so the preview cannot
 # name anything the restore would go on to refuse.
 report_restore_preview() {
-  local names=() plugin_ids=() line
+  local names=() aur_names=() plugin_ids=() line
   if [[ -f $VAULT/packages/native.txt || -f $VAULT/packages/foreign.txt ]]; then
     local installed; installed=$(mktemp)
     pacman -Qq 2>/dev/null | sort >"$installed" || true
     local want; want=$(mktemp)
     # Only list files that exist — `sort` exits non-zero on a missing operand.
-    { [[ -f $VAULT/packages/native.txt ]] && cat -- "$VAULT/packages/native.txt"
-      [[ -f $VAULT/packages/foreign.txt ]] && cat -- "$VAULT/packages/foreign.txt"
-    } | sort -u >"$want"
+    [[ -f $VAULT/packages/native.txt ]] && sort -u -- "$VAULT/packages/native.txt" >"$want" || : >"$want"
     while IFS= read -r line; do
       [[ -n $line ]] || continue
       valid_pkg "$line" && names+=("$line")
     done < <(comm -23 "$want" "$installed" || true)
+    # Kept apart from the repo list all the way to the screen: one is a signed
+    # download, the other is a build, and the difference is the whole reason
+    # there is a second question later.
+    if [[ -f $VAULT/packages/foreign.txt ]]; then
+      sort -u -- "$VAULT/packages/foreign.txt" >"$want"
+      while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        valid_pkg "$line" && aur_names+=("$line")
+      done < <(comm -23 "$want" "$installed" || true)
+    fi
     rm -f "$installed" "$want"
   fi
   if [[ -f $VAULT/plugins/plugins.tsv ]]; then
@@ -1216,12 +1421,17 @@ report_restore_preview() {
     done < <(tr '\t' '\037' <"$VAULT/plugins/plugins.tsv")
   fi
 
-  (( ${#names[@]} + ${#plugin_ids[@]} == 0 )) && return 0
+  (( ${#names[@]} + ${#aur_names[@]} + ${#plugin_ids[@]} == 0 )) && return 0
 
   printf '\n%sThis restore will install:%s\n' "$c_bold" "$c_reset"
   if (( ${#names[@]} > 0 )); then
-    printf '  %s%s%s\n' "$c_green" "$(plural "${#names[@]}" package)" "$c_reset"
+    printf '  %s%s from the Arch repos%s\n' "$c_green" "$(plural "${#names[@]}" package)" "$c_reset"
     printf '%s\n' "${names[@]}" | fmt -w 72 | sed 's/^/      /'
+  fi
+  if (( ${#aur_names[@]} > 0 )); then
+    printf '  %s%s built here from the AUR%s %s(asked about separately)%s\n' \
+      "$c_yellow" "$(plural "${#aur_names[@]}" package)" "$c_reset" "$c_dim" "$c_reset"
+    printf '%s\n' "${aur_names[@]}" | fmt -w 72 | sed 's/^/      /'
   fi
   if (( ${#plugin_ids[@]} > 0 )); then
     printf '  %s%s%s\n' "$c_green" "$(plural "${#plugin_ids[@]}" "shell plugin")" "$c_reset"
@@ -1361,8 +1571,9 @@ cmd_restore() {
     "restore_$category"
     # Only a category that actually succeeded is recorded as done. Marking a
     # failed one made "rerun to pick up where it stopped" untrue: the rerun
-    # skipped precisely the step that had failed.
-    if (( ! DRY_RUN )) && (( ${#FAILED_STEPS[@]} == failures_before )); then
+    # skipped precisely the step that had failed. A category left deliberately
+    # incomplete is not done either, for the same reason.
+    if (( ! DRY_RUN )) && (( ${#FAILED_STEPS[@]} == failures_before )) && ! was_partial "$category"; then
       mark_done "$category"
     fi
   done
@@ -1379,6 +1590,15 @@ cmd_restore() {
     else
       printf '%sThis machine is yours again%s — in %s. Log out and back in to pick up\nshell and session changes.\n' \
         "$c_bold" "$c_reset" "$(duration "$elapsed")"
+    fi
+    # Said after either ending: what you declined is not a problem, but it is
+    # also not finished, and the next run will offer it again.
+    if (( ${#PARTIAL_STEPS[@]} > 0 )); then
+      printf '\n%sLeft for later:%s\n' "$c_bold" "$c_reset"
+      local entry
+      for entry in "${PARTIAL_STEPS[@]:-}"; do
+        [[ -n $entry ]] && printf '  · %s\n' "${entry#*|}"
+      done
     fi
   fi
   emit "DONE|$( (( RESTORE_FAILED )) && echo partial || echo ok)|restore complete"
@@ -2185,7 +2405,8 @@ cmd_apply() {
     printf '%s\n' "$missing_native" | fmt -w 76 | sed 's/^/      /'
   fi
   if (( n_aur > 0 )); then
-    printf '  %s%s from the AUR%s\n' "$c_yellow" "$(plural "$n_aur" package)" "$c_reset"
+    printf '  %s%s from the AUR%s %s(built here from a PKGBUILD; asked about separately)%s\n' \
+      "$c_yellow" "$(plural "$n_aur" package)" "$c_reset" "$c_dim" "$c_reset"
     printf '%s\n' "$missing_aur" | fmt -w 76 | sed 's/^/      /'
   fi
   if (( ${#plugin_rows[@]} > 0 )); then
@@ -2214,19 +2435,23 @@ cmd_apply() {
 
   # ------------------------------------------------------------- the actions
 
+  local apply_native=() apply_aur=() pkg
   if (( n_native > 0 )); then
     step_start apply "Installing $n_native packages"
-    local apply_native=() apply_aur=() pkg
     while IFS= read -r pkg; do [[ -n $pkg ]] && apply_native+=("$pkg"); done <<<"$missing_native"
     sudo pacman -S --needed --noconfirm -- "${apply_native[@]}" &&
       step_ok apply "repo packages installed" ||
       { step_fail apply "some repo packages failed"; RESTORE_FAILED=1; }
   fi
   if (( n_aur > 0 )) && have yay; then
-    step_start apply "Building $n_aur AUR packages"
     while IFS= read -r pkg; do [[ -n $pkg ]] && apply_aur+=("$pkg"); done <<<"$missing_aur"
-    yay -S --needed --noconfirm --answerclean None --answerdiff None -- "${apply_aur[@]}" ||
-      step_warn apply "some AUR packages failed"
+    # A loadout comes from a stranger by design, so its AUR list gets exactly
+    # the same question a vault's does — asked here rather than folded into
+    # "apply this loadout?", because it is a different question.
+    aur_gate apply "${apply_aur[@]}"
+    if [[ $AUR_MODE != skip ]]; then
+      aur_install apply "${AUR_KEPT[@]}" || step_warn apply "some AUR packages failed"
+    fi
   elif (( n_aur > 0 )); then
     step_warn apply "yay is not installed; skipped $n_aur AUR packages"
   fi
@@ -2319,6 +2544,9 @@ while (( $# > 0 )); do
     --dry-run|-n) DRY_RUN=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --allow-unpinned) ALLOW_UNPINNED=1; shift ;;
+    --aur) AUR_CHOICE="yes"; shift ;;
+    --no-aur) AUR_CHOICE="no"; shift ;;
+    --review-aur) AUR_CHOICE="yes"; AUR_REVIEW=1; shift ;;
     --version) printf '%s\n' "$VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     --) shift; while (( $# > 0 )); do ARGS+=("$1"); shift; done ;;

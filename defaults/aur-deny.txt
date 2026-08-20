@@ -1,0 +1,10 @@
+# ress — AUR packages never to build, one name per line.
+#
+# A vault records package names; a restore turns those names into PKGBUILDs
+# fetched from aur.archlinux.org and run on this machine. Anything listed here
+# is dropped from that list before the question is even asked, on every vault,
+# including your own.
+#
+# Add your own in ~/.config/ress/aur-deny (same format). Nothing is listed by
+# default: what belongs here is a judgement about a package, and that judgement
+# is yours.
