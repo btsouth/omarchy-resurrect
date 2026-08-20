@@ -106,8 +106,8 @@ load_config() {
 }
 
 save_config() {
-  mkdir -p "$CONFIG_DIR"
-  local tmp="$CONFIG_FILE.tmp.$$"
+  private_dir "$CONFIG_DIR"
+  local tmp; tmp=$(mktemp "$CONFIG_DIR/.config.XXXXXX")
   {
     echo "# Resurrect configuration. Written by \`ress set\` and by the panel."
     echo "# Both the CLI and the Quickshell panel read this file; there is no second source."
@@ -120,6 +120,7 @@ save_config() {
     done
   } >"$tmp"
   mv "$tmp" "$CONFIG_FILE"
+  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
 }
 
 cat_enabled() {
@@ -133,6 +134,33 @@ resolve_vault() { VAULT="${VAULT_OVERRIDE:-${CFG[VAULT]}}"; }
 # ------------------------------------------------------------------- helpers
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# A vault chooses the text we print about it. Escape sequences in that text can
+# repaint the screen — including the confirmation prompt shown just before a
+# sudo — so nothing from a vault reaches the terminal with control bytes in it.
+plain() { printf '%s' "$1" | tr -d '\000-\037\177'; }
+
+# A vault holds your dotfiles and the config names where your secrets live.
+# Neither has any business being world-readable on a shared machine, and the
+# default umask would make both 0755.
+private_dir() { mkdir -p "$1" && chmod 700 "$1" 2>/dev/null || true; }
+
+# The panel-owned engine and the headless scheduler are separate processes with
+# separate ideas of "busy". Without a lock they will both write the same git
+# vault; without the marker file the bar shows nothing while the scheduler runs.
+ress_cleanup() {
+  [[ -n ${STATE_DIR:-} ]] && rm -f "$STATE_DIR/running" 2>/dev/null
+  [[ -n ${APPLY_WORK:-} ]] && rm -rf "$APPLY_WORK" 2>/dev/null
+  return 0
+}
+trap ress_cleanup EXIT
+
+take_lock() {
+  private_dir "$STATE_DIR"
+  exec 9>"$STATE_DIR/lock"
+  flock -n 9 || die "another ress operation is already running"
+  date -u +%s >"$STATE_DIR/running"
+}
 
 # "1 plugins" reads like a bug even when the number is right.
 plural() {
@@ -169,7 +197,7 @@ merged_list() {
 git_vault() { git -C "$VAULT" "$@"; }
 
 ensure_vault_repo() {
-  mkdir -p "$VAULT"
+  private_dir "$VAULT"
   if [[ ! -d $VAULT/.git ]]; then
     git_vault init -q -b main
     git_vault config user.name "$(git config --global user.name 2>/dev/null || echo "$USER")"
@@ -184,6 +212,15 @@ ensure_vault_repo() {
 }
 
 # ================================================================== CAPTURE
+
+# One exclude list, used by every capture. It carries the credential patterns,
+# so any capture that forgets it is a capture that can put a key in the vault.
+build_excludes() {
+  private_dir "$STATE_DIR"
+  local out="$STATE_DIR/exclude.rsync"
+  merged_list exclude >"$out"
+  printf '%s\n' "$out"
+}
 
 capture_packages() {
   local out="$VAULT/packages"
@@ -207,9 +244,7 @@ capture_config() {
   rm -rf "$out"; mkdir -p "$out"
   step_start config "Copying dotfiles"
 
-  local excludes="$STATE_DIR/exclude.rsync"
-  mkdir -p "$STATE_DIR"
-  merged_list exclude >"$excludes"
+  local excludes; excludes=$(build_excludes)
   printf '%s\n' ".config/omarchy/" >>"$excludes"
 
   local entries=() entry present=0 missing=0
@@ -268,8 +303,10 @@ capture_omarchy() {
   for item in shell.json shell.toml; do
     [[ -f $src/$item ]] && cp "$src/$item" "$out/$item"
   done
+  local excludes; excludes=$(build_excludes)
   for item in branding defaults extensions hooks themed; do
-    [[ -d $src/$item ]] && rsync -a "$src/$item/" "$out/$item/" 2>/dev/null
+    [[ -d $src/$item ]] &&
+      rsync -a --exclude-from="$excludes" --max-size=20m -- "$src/$item/" "$out/$item/" 2>/dev/null
   done
 
   # Themes: git-installed ones travel as a URL, hand-made ones as files.
@@ -284,7 +321,7 @@ capture_omarchy() {
       printf '%s\t%s\n' "$name" "$url" >>"$out/themes.tsv"
     else
       printf '%s\t\n' "$name" >>"$out/themes.tsv"
-      rsync -a --exclude '.git/' "$theme" "$out/themes/$name/" 2>/dev/null
+      rsync -a --exclude '.git/' --exclude-from="$excludes" --max-size=20m -- "$theme" "$out/themes/$name/" 2>/dev/null
     fi
   done
 
@@ -447,8 +484,13 @@ cmd_backup() {
   (( force_secrets )) && CFG[INCLUDE_SECRETS]=1
 
   resolve_vault
+  take_lock
   ensure_vault_repo
   local backup_started=$SECONDS
+  # Written before any work, so a run that dies partway still moves the next
+  # deadline. Keyed off the attempt, not the success, or a failing backup
+  # reschedules itself a minute later and never stops.
+  date -u +%s >"$STATE_DIR/last-attempt"
   emit "BEGIN|backup|$VAULT"
 
   DONE_CATEGORIES=()
@@ -477,7 +519,7 @@ cmd_backup() {
     push_vault
   fi
 
-  mkdir -p "$STATE_DIR"
+  private_dir "$STATE_DIR"
   date -u +%s >"$STATE_DIR/last-backup"
   emit "DONE|ok|backup complete"
   (( PORCELAIN )) || printf '\n%sBacked up to %s%s in %s\n' "$c_bold" "$VAULT" "$c_reset" "$(duration $((SECONDS - backup_started)))"
@@ -577,10 +619,10 @@ restore_config() {
   local n; n=$(find "$dir" -type f | wc -l)
   step_start config "Restoring $n files into \$HOME"
   if (( DRY_RUN )); then
-    rsync -an --out-format='    %n' "${RSYNC_SAFE[@]}" "$dir/" "$HOME/"
+    rsync -an --out-format='    %n' "${RSYNC_SAFE[@]}" -- "$dir/" "$HOME/"
     return 0
   fi
-  rsync "${RSYNC_SAFE[@]}" "$dir/" "$HOME/"
+  rsync "${RSYNC_SAFE[@]}" -- "$dir/" "$HOME/"
   step_ok config "$n files restored (replaced files kept as *.resurrect-bak)"
 
   local units="$VAULT/services/user-units.txt"
@@ -589,8 +631,8 @@ restore_config() {
     while IFS= read -r unit; do
       [[ -n $unit ]] || continue
       valid_unit "$unit" || continue
-      systemctl --user is-enabled "$unit" >/dev/null 2>&1 && continue
-      systemctl --user enable "$unit" >/dev/null 2>&1 && enabled=$((enabled + 1))
+      systemctl --user is-enabled -- "$unit" >/dev/null 2>&1 && continue
+      systemctl --user enable -- "$unit" >/dev/null 2>&1 && enabled=$((enabled + 1))
     done <"$units"
     (( enabled > 0 )) && step_ok config "$enabled user services enabled"
   fi
@@ -607,7 +649,7 @@ restore_omarchy() {
 
   local item
   for item in branding defaults extensions hooks themed; do
-    [[ -d $dir/$item ]] && rsync "${RSYNC_SAFE[@]}" "$dir/$item/" "$dest/$item/"
+    [[ -d $dir/$item ]] && rsync "${RSYNC_SAFE[@]}" -- "$dir/$item/" "$dest/$item/"
   done
   [[ -f $dir/shell.toml ]] && cp -n "$dir/shell.toml" "$dest/shell.toml" 2>/dev/null || true
 
@@ -627,20 +669,23 @@ restore_omarchy() {
       fi
       [[ -d $dest/themes/$name ]] && continue
       if [[ -n $url ]]; then
-        if git clone -q --depth 1 "$url" "$dest/themes/$name" 2>/dev/null; then
+        if git clone -q --depth 1 -- "$url" "$dest/themes/$name" 2>/dev/null; then
           installed=$((installed + 1))
         else
           step_warn omarchy "could not clone theme $name from $url"
         fi
       elif [[ -d $dir/themes/$name ]]; then
-        rsync -a "$dir/themes/$name/" "$dest/themes/$name/"
+        rsync -a --safe-links -- "$dir/themes/$name/" "$dest/themes/$name/"
         installed=$((installed + 1))
       fi
     done <"$dir/themes.tsv"
   fi
   (( installed > 0 )) && step_ok omarchy "$installed themes installed"
 
-  [[ -f $dir/shell.json ]] && cp "$dir/shell.json" "$dest/shell.json"
+  if [[ -f $dir/shell.json ]]; then
+    [[ -f $dest/shell.json ]] && cp -p "$dest/shell.json" "$dest/shell.json.resurrect-bak"
+    cp "$dir/shell.json" "$dest/shell.json"
+  fi
   step_ok omarchy "shell layout restored"
 
   if [[ -f $dir/theme.name ]] && have omarchy-theme-set; then
@@ -675,11 +720,17 @@ restore_webapps() {
       refused=$((refused + 1))
       continue
     fi
+    [[ -f $HOME/.local/share/applications/$base ]] &&
+      cp -p "$HOME/.local/share/applications/$base" "$HOME/.local/share/applications/$base.resurrect-bak"
     cp "$desktop" "$HOME/.local/share/applications/$base"
   done
   (( refused == 0 )) || step_warn webapps "refused $refused launcher(s) that do not run omarchy-launch-webapp"
-  [[ -d $dir/icons ]] && rsync -a "$dir/icons/" "$HOME/.local/share/icons/hicolor/256x256/apps/"
-  chmod +x "$HOME"/.local/share/applications/*.desktop 2>/dev/null || true
+  [[ -d $dir/icons ]] && rsync -a --safe-links --backup --suffix=".resurrect-bak" -- "$dir/icons/" "$HOME/.local/share/icons/hicolor/256x256/apps/"
+  for desktop in "$dir"/apps/*.desktop; do
+    [[ -f $desktop ]] || continue
+    base=$(basename "$desktop")
+    [[ -f $HOME/.local/share/applications/$base ]] && chmod +x "$HOME/.local/share/applications/$base"
+  done
   have gtk-update-icon-cache && gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" &>/dev/null || true
   have update-desktop-database && update-desktop-database "$HOME/.local/share/applications" &>/dev/null || true
   step_ok webapps "$n web apps restored"
@@ -729,7 +780,7 @@ restore_plugins() {
         ok=$((ok + 1)); continue
       fi
     fi
-    if git clone -q --depth 1 "$url" "$HOME/.config/omarchy/plugins/$id" 2>/dev/null &&
+    if git clone -q --depth 1 -- "$url" "$HOME/.config/omarchy/plugins/$id" 2>/dev/null &&
       omarchy plugin validate "$HOME/.config/omarchy/plugins/$id" >/dev/null 2>&1; then
       ok=$((ok + 1))
     else
@@ -761,14 +812,41 @@ restore_secrets() {
     [[ -f $identity ]] || { step_fail secrets "identity file $identity not found — bring it here first"; return 0; }
     args=(-i "$identity")
   fi
-  if age -d "${args[@]}" "$blob" | tar -C "$HOME" -xf - ; then
-    chmod 700 "$HOME/.ssh" 2>/dev/null || true
-    find "$HOME/.ssh" -type f -exec chmod 600 {} \; 2>/dev/null || true
-    step_ok secrets "secrets restored with 0600 permissions"
-  else
-    step_fail secrets "decryption failed"
-    RESTORE_FAILED=1
+
+  # The archive inside the blob is as untrusted as the vault around it: whoever
+  # wrote it chose the member list. Unpack into a staging directory first so
+  # nothing lands in $HOME until it has been looked at.
+  local work; work=$(mktemp -d)
+  chmod 700 "$work" 2>/dev/null || true
+  ( umask 077; : >"$work/blob.tar" )
+  if ! age -d "${args[@]}" "$blob" >"$work/blob.tar" 2>/dev/null; then
+    rm -rf "$work"; step_fail secrets "decryption failed"; RESTORE_FAILED=1; return 0
   fi
+  if tar -tf "$work/blob.tar" 2>/dev/null | grep -qE '^/|(^|/)\.\.(/|$)'; then
+    rm -rf "$work"; step_fail secrets "refused: the archive contains absolute or traversing paths"
+    RESTORE_FAILED=1; return 0
+  fi
+  mkdir -p "$work/tree"
+  if ! tar -C "$work/tree" -xf "$work/blob.tar" 2>/dev/null; then
+    rm -rf "$work"; step_fail secrets "could not unpack the archive"; RESTORE_FAILED=1; return 0
+  fi
+  # A symlink member is how an archive aims a later write, or a chmod, at a path
+  # of its choosing. None of them travel.
+  local links; links=$(find "$work/tree" -type l 2>/dev/null | wc -l)
+  (( links == 0 )) || step_warn secrets "dropped $links symlink(s) from the archive"
+  find "$work/tree" -type l -delete 2>/dev/null || true
+
+  # Landing through rsync gives secrets the same *.resurrect-bak protection
+  # every other restored file gets; tar would have overwritten silently.
+  rsync "${RSYNC_SAFE[@]}" -- "$work/tree/" "$HOME/"
+  rm -rf "$work"
+
+  # Never follow a symlink at ~/.ssh: chmod would apply to its target.
+  if [[ -d $HOME/.ssh && ! -L $HOME/.ssh ]]; then
+    chmod 700 "$HOME/.ssh" 2>/dev/null || true
+    find -P "$HOME/.ssh" -type f -exec chmod 600 {} + 2>/dev/null || true
+  fi
+  step_ok secrets "secrets restored with 0600 permissions"
   return 0
 }
 
@@ -777,7 +855,7 @@ restore_secrets() {
 RESTORE_ORDER=(packages config plugins omarchy webapps secrets)
 
 cmd_restore() {
-  local from="" only="" skip="" restart=0
+  local from="" only="" skip="" restart=0 pending_remote=""
   while (( $# > 0 )); do
     case "$1" in
       --from) from="${2:-}"; shift 2 ;;
@@ -790,6 +868,11 @@ cmd_restore() {
 
   resolve_vault
   [[ -n $from ]] && from=$(normalize_source "$from")
+  if [[ -n $from ]] && (( ! DRY_RUN )) && [[ -d $VAULT/.git || -e $VAULT ]]; then
+    # Fetching replaces whatever vault is already here, which is a change in its
+    # own right and used to happen before any prompt.
+    confirm "Replace the vault at $VAULT with the one at $(plain "$from")?" || die "cancelled"
+  fi
   if [[ -n $from ]]; then
     if [[ -d $VAULT/.git ]]; then
       step_start clone "Updating vault from $from"
@@ -799,41 +882,44 @@ cmd_restore() {
     else
       step_start clone "Cloning $from"
       rm -rf "$VAULT"; mkdir -p "$(dirname "$VAULT")"
-      git clone -q --depth 1 "$from" "$VAULT" || die "could not clone $from"
+      git clone -q --depth 1 -- "$from" "$VAULT" || die "could not clone $from"
       step_ok clone "cloned to $VAULT"
     fi
-    # A one-off `--vault` is a scratch restore, not a change of allegiance —
-    # don't rewrite the machine's configured remote for it.
-    if [[ -z ${VAULT_OVERRIDE:-} ]]; then
-      CFG[REMOTE]="$from"
-      save_config
-    fi
+    # Remembered only after the restore itself is agreed to, below — answering
+    # "no" should not leave the machine pointed somewhere new.
+    pending_remote="$from"
   fi
 
   # Fail on the missing tool now, with its package name, rather than halfway
   # through a restore on a machine you cannot yet use.
   local tool missing=()
-  for tool in git rsync jq; do have "$tool" || missing+=("$tool"); done
+  for tool in git rsync jq pacman; do have "$tool" || missing+=("$tool"); done
   (( ${#missing[@]} == 0 )) ||
     die "missing: ${missing[*]} — run: sudo pacman -S --needed ${missing[*]}"
 
+  take_lock
   [[ -f $VAULT/resurrect.json ]] || die "no vault at $VAULT — pass --from <git-url> or --vault <dir>"
   local schema; schema=$(jq -r '.schemaVersion // 0' "$VAULT/resurrect.json")
   (( schema == SCHEMA )) || die "vault schema $schema is not readable by Resurrect $VERSION"
 
-  mkdir -p "$STATE_DIR"
+  private_dir "$STATE_DIR"
   RESTORE_STATE="$STATE_DIR/restore.state"
   (( restart )) && rm -f "$RESTORE_STATE"
   touch "$RESTORE_STATE"
 
-  local origin; origin=$(jq -r '.machine.hostname // "?"' "$VAULT/resurrect.json")
-  local created; created=$(jq -r '.createdAt // "?"' "$VAULT/resurrect.json")
+  local origin; origin=$(plain "$(jq -r '.machine.hostname // "?"' "$VAULT/resurrect.json")")
+  local created; created=$(plain "$(jq -r '.createdAt // "?"' "$VAULT/resurrect.json")")
 
   if (( ! DRY_RUN )); then
     printf '%sResurrecting %s%s (backed up %s) onto %s.%s\n' \
       "$c_bold" "$origin" "$c_reset$c_dim" "$created" "$(hostname)" "$c_reset"
     confirm "This overwrites configuration in your home directory. Continue?" ||
       die "cancelled"
+    # A one-off `--vault` is a scratch restore, not a change of allegiance.
+    if [[ -n ${pending_remote:-} && -z ${VAULT_OVERRIDE:-} ]]; then
+      CFG[REMOTE]="$pending_remote"
+      save_config
+    fi
   fi
 
   emit "BEGIN|restore|$VAULT"
@@ -945,7 +1031,7 @@ cmd_init() {
   CFG[VAULT]="$VAULT"
   [[ -n $remote ]] && CFG[REMOTE]="$remote"
   save_config
-  mkdir -p "$CONFIG_DIR"
+  private_dir "$CONFIG_DIR"
   [[ -f $CONFIG_DIR/include ]] || printf '%s\n' \
     "# Extra paths to capture, one per line, relative to \$HOME." \
     "# These are added to the list shipped with Resurrect." >"$CONFIG_DIR/include"
@@ -974,7 +1060,7 @@ cmd_secrets() {
   local action="${1:-list}"; shift || true
   case "$action" in
     init)
-      mkdir -p "$CONFIG_DIR"
+      private_dir "$CONFIG_DIR"
       if [[ -f $CONFIG_DIR/secrets ]]; then
         printf 'Already at %s\n' "$CONFIG_DIR/secrets"
       else
@@ -1002,7 +1088,7 @@ LIST
       ;;
     add)
       [[ -n ${1:-} ]] || die "usage: ress secrets add <path-relative-to-home>"
-      mkdir -p "$CONFIG_DIR"; touch "$CONFIG_DIR/secrets"
+      private_dir "$CONFIG_DIR"; touch "$CONFIG_DIR/secrets"
       printf '%s\n' "$1" >>"$CONFIG_DIR/secrets"
       printf 'Added %s\n' "$1"
       ;;
@@ -1026,29 +1112,35 @@ cmd_link() {
   esac
 }
 
+vault_is_initialised() { [[ -d "$VAULT/.git" ]]; }
+
 cmd_doctor() {
   local problems=0
   printf '%sResurrect doctor%s\n\n' "$c_bold" "$c_reset"
+  # Takes a command, never a string to eval: an eval of an interpolated config
+  # value is exactly the shape a scanner and a reviewer both stop on.
   check() {
-    if eval "$2" >/dev/null 2>&1; then
-      printf '  %s✓%s %s\n' "$c_green" "$c_reset" "$1"
+    local label="$1" hint="$2"; shift 2
+    if "$@" >/dev/null 2>&1; then
+      printf '  %s✓%s %s\n' "$c_green" "$c_reset" "$label"
     else
-      printf '  %s✗%s %s%s\n' "$c_red" "$c_reset" "$1" "${3:+ — $3}"
+      printf '  %s✗%s %s%s\n' "$c_red" "$c_reset" "$label" "${hint:+ — $hint}"
       problems=$((problems + 1))
     fi
   }
-  check "git"            "have git"
-  check "rsync"          "have rsync"
-  check "jq"             "have jq"
-  check "pacman"         "have pacman"
-  check "yay (AUR)"      "have yay"       "AUR packages will be skipped on restore"
-  check "age (secrets)"  "have age"       "optional; needed only for the secrets category"
-  check "omarchy CLI"    "have omarchy"
-  check "shell running"  "omarchy-shell shell ping" "the panel needs omarchy-shell; the CLI does not"
+  check "git"            ""  have git
+  check "rsync"          ""  have rsync
+  check "jq"             ""  have jq
+  check "curl"           ""  have curl
+  check "pacman"         ""  have pacman
+  check "yay (AUR)"      "AUR packages will be skipped on restore"          have yay
+  check "age (secrets)"  "optional; needed only for the secrets category"   have age
+  check "omarchy CLI"    ""  have omarchy
+  check "shell running"  "the panel needs omarchy-shell; the CLI does not"  omarchy-shell shell ping
   resolve_vault
-  check "vault"          "[[ -d '$VAULT/.git' ]]" "run: ress init"
-  check "git identity"   "git config --global user.email"
-  check "ress on PATH"   "command -v ress" "run: $SELF_DIR/ress link"
+  check "vault"          "run: ress init"          vault_is_initialised
+  check "git identity"   ""                        git config --global user.email
+  check "ress on PATH"   "run: $SELF_DIR/ress link" command -v ress
   printf '\n'
   (( problems == 0 )) && printf '%sReady.%s\n' "$c_green" "$c_reset" || printf '%s%d problems.%s\n' "$c_yellow" "$problems" "$c_reset"
   return 0
@@ -1099,12 +1191,19 @@ cmd_diff_stock() {
     die "no Omarchy package manifest on this machine (expected ${STOCK_LISTS[0]})"
   fi
 
-  local mine
+  local mine_raw
   if [[ -f $VAULT/packages/native.txt ]]; then
-    mine=$(sort -u "$VAULT/packages/native.txt" "$VAULT/packages/foreign.txt" 2>/dev/null)
+    mine_raw=$(sort -u "$VAULT/packages/native.txt" "$VAULT/packages/foreign.txt" 2>/dev/null)
   else
-    mine=$(pacman -Qqe | sort -u)
+    mine_raw=$(pacman -Qqe | sort -u)
   fi
+
+  # These names are read out of a vault and end up as argv for expac, so they go
+  # through the same filter the restore path uses. `diff --stock` is read-only,
+  # but a name that could be read as an option has no business being here.
+  local mine
+  keep_valid valid_pkg diff "package names" <<<"$mine_raw"
+  mine=$(printf '%s\n' "${KEPT[@]:-}" | grep -v '^$' || true)
 
   local extra; extra=$(comm -23 <(printf '%s\n' "$mine") "$stock" || true)
   local n_mine n_stock n_extra
@@ -1122,7 +1221,9 @@ cmd_diff_stock() {
     printf '\n'
     if have expac; then
       local mb
-      mb=$(expac -S '%k' $extra 2>/dev/null | awk '{s+=$1} END {printf "%.0f", s/1024/1024}')
+      local priced=()
+      while IFS= read -r pkg; do [[ -n $pkg ]] && priced+=("$pkg"); done <<<"$extra"
+      mb=$(expac -S '%k' -- "${priced[@]:-}" 2>/dev/null | awk '{s+=$1} END {printf "%.0f", s/1024/1024}')
       [[ -n $mb ]] && printf '  %s≈ %s MB to download.%s\n' "$c_dim" "$mb" "$c_reset"
     fi
   fi
@@ -1185,6 +1286,7 @@ APPLY_WORK=""
 valid_pkg()   { [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9@._+-]{0,127}$ ]]; }
 valid_id()    { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] && [[ $1 != *".."* ]]; }
 valid_theme() { [[ $1 =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] && [[ $1 != *".."* ]]; }
+valid_icon()  { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; }
 valid_label() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9\ ._+\&-]{0,63}$ ]]; }
 valid_https() { [[ $1 =~ ^https://[A-Za-z0-9._~:/?\#@!\$\&\(\)*+,\;=%-]{3,512}$ ]]; }
 valid_unit()  { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9@._-]{0,127}\.(service|socket|timer|target|path|slice)$ ]]; }
@@ -1391,10 +1493,10 @@ fetch_profile() {
     cp "$source/profile.json" "$dest/profile.json"
   elif [[ $source == *.json ]]; then
     valid_https "$source" || die "profile URLs must be https"
-    curl -fsSL --max-time 20 -o "$dest/profile.json" "$source" || die "could not fetch $source"
+    curl -fsSL --max-time 20 -o "$dest/profile.json" -- "$source" || die "could not fetch $source"
   else
     valid_https "$source" || die "profile URLs must be https"
-    git clone -q --depth 1 "$source" "$dest/repo" 2>/dev/null || die "could not clone $source"
+    git clone -q --depth 1 -- "$source" "$dest/repo" 2>/dev/null || die "could not clone $source"
     [[ -f $dest/repo/profile.json ]] || die "no profile.json at the root of $source"
     cp "$dest/repo/profile.json" "$dest/profile.json"
   fi
@@ -1419,16 +1521,18 @@ cmd_apply() {
   done
 
   APPLY_WORK=$(mktemp -d)
-  trap 'rm -rf "${APPLY_WORK:-}"' EXIT
   local work="$APPLY_WORK"
   step_start apply "Fetching the loadout"
   fetch_profile "$source" "$work"
   local profile="$work/profile.json"
 
   local name author created
-  name=$(jq -r '.name // "Untitled"' "$profile")
-  author=$(jq -r '.author // "unknown"' "$profile")
-  created=$(jq -r '.createdAt // "?"' "$profile")
+  # A loadout picks its own name, author and description. They are shown right
+  # above a confirmation prompt that leads to sudo, so they are stripped of
+  # anything that could redraw the screen.
+  name=$(plain "$(jq -r '.name // "Untitled"' "$profile")")
+  author=$(plain "$(jq -r '.author // "unknown"' "$profile")")
+  created=$(plain "$(jq -r '.createdAt // "?"' "$profile")")
   step_ok apply "$name by $author ($created)"
 
   # ------------------------------------------------------------- the preview
@@ -1439,8 +1543,14 @@ cmd_apply() {
 
   local installed; installed=$(mktemp); pacman -Qq | sort >"$installed"
   local want_native want_aur missing_native missing_aur
-  want_native=$(jq -r '.packages.native[]? // empty' "$profile" | while read -r p; do valid_pkg "$p" && echo "$p"; done | sort -u)
-  want_aur=$(jq -r '.packages.aur[]? // empty' "$profile" | while read -r p; do valid_pkg "$p" && echo "$p"; done | sort -u)
+  # Filtering through the shared helper rather than a `while read` inside a
+  # pipeline: that construct exits non-zero whenever the *last* entry is
+  # rejected, and with pipefail + set -e that aborted the whole run before the
+  # preview — the exact input this is meant to survive.
+  keep_valid valid_pkg apply "package names" <<<"$(jq -r '.packages.native[]? // empty' "$profile")"
+  want_native=$(printf '%s\n' "${KEPT[@]:-}" | grep -v '^$' | sort -u || true)
+  keep_valid valid_pkg apply "package names" <<<"$(jq -r '.packages.aur[]? // empty' "$profile")"
+  want_aur=$(printf '%s\n' "${KEPT[@]:-}" | grep -v '^$' | sort -u || true)
   missing_native=$(comm -23 <(printf '%s\n' "$want_native" | grep -v '^$' || true) "$installed" || true)
   missing_aur=$(comm -23 <(printf '%s\n' "$want_aur" | grep -v '^$' || true) "$installed" || true)
   rm -f "$installed"
@@ -1461,6 +1571,7 @@ cmd_apply() {
   while IFS=$'\t' read -r label url id; do
     [[ -n $label ]] || continue
     valid_label "$label" && valid_https "$url" || continue
+    valid_icon "$id" || id=""
     [[ -f $HOME/.local/share/applications/$label.desktop ]] && continue
     webapp_rows+=("$label"$'\t'"$url"$'\t'"$id")
   done < <(jq -r '.webapps[]? | [.name, .url, (.icon // "")] | @tsv' "$profile")
@@ -1481,7 +1592,7 @@ cmd_apply() {
   fi
 
   printf '\n%s%s%s — by %s\n' "$c_bold" "$name" "$c_reset" "$author"
-  printf '%s%s%s\n\n' "$c_dim" "$(jq -r '.description // ""' "$profile")" "$c_reset"
+  printf '%s%s%s\n\n' "$c_dim" "$(plain "$(jq -r '.description // ""' "$profile")")" "$c_reset"
 
   printf '%sThis will install:%s\n\n' "$c_bold" "$c_reset"
   if (( n_native > 0 )); then
@@ -1515,15 +1626,16 @@ cmd_apply() {
 
   if (( n_native > 0 )); then
     step_start apply "Installing $n_native packages"
-    # shellcheck disable=SC2086
-    sudo pacman -S --needed --noconfirm $missing_native &&
+    local apply_native=() apply_aur=() pkg
+    while IFS= read -r pkg; do [[ -n $pkg ]] && apply_native+=("$pkg"); done <<<"$missing_native"
+    sudo pacman -S --needed --noconfirm -- "${apply_native[@]}" &&
       step_ok apply "repo packages installed" ||
       { step_fail apply "some repo packages failed"; RESTORE_FAILED=1; }
   fi
   if (( n_aur > 0 )) && have yay; then
     step_start apply "Building $n_aur AUR packages"
-    # shellcheck disable=SC2086
-    yay -S --needed --noconfirm --answerclean None --answerdiff None $missing_aur ||
+    while IFS= read -r pkg; do [[ -n $pkg ]] && apply_aur+=("$pkg"); done <<<"$missing_aur"
+    yay -S --needed --noconfirm --answerclean None --answerdiff None -- "${apply_aur[@]}" ||
       step_warn apply "some AUR packages failed"
   elif (( n_aur > 0 )); then
     step_warn apply "yay is not installed; skipped $n_aur AUR packages"
@@ -1550,7 +1662,7 @@ cmd_apply() {
 
   if [[ -n $theme_name ]]; then
     if [[ ! -d $HOME/.config/omarchy/themes/$theme_name ]] && [[ -n $theme_url ]]; then
-      git clone -q --depth 1 "$theme_url" "$HOME/.config/omarchy/themes/$theme_name" 2>/dev/null || true
+      git clone -q --depth 1 -- "$theme_url" "$HOME/.config/omarchy/themes/$theme_name" 2>/dev/null || true
     fi
     omarchy theme set "$theme_name" >/dev/null 2>&1 &&
       step_ok apply "theme $theme_name" ||
@@ -1558,7 +1670,7 @@ cmd_apply() {
   fi
 
   emit "DONE|ok|apply complete"
-  printf '\n%sLoadout applied.%s Your files and settings were not touched.\n' "$c_bold" "$c_reset"
+  printf '\n%sLoadout applied.%s Your dotfiles and your home directory were not touched.\n' "$c_bold" "$c_reset"
 }
 
 # ==================================================================== USAGE
@@ -1610,6 +1722,7 @@ while (( $# > 0 )); do
     --yes|-y) ASSUME_YES=1; shift ;;
     --version) printf '%s\n' "$VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
+    --) shift; while (( $# > 0 )); do ARGS+=("$1"); shift; done ;;
     *) ARGS+=("$1"); shift ;;
   esac
 done

@@ -13,7 +13,7 @@ import "Model.js" as Model
 Panel {
   id: root
   moduleName: "tsouth89.resurrect"
-  ipcTarget: "resurrect"
+  ipcTarget: "tsouth89.resurrect"
   manageIpc: false
 
   // ------------------------------------------------------------------ theme
@@ -102,7 +102,6 @@ Panel {
       case "copy":
         copyProc.command = ["wl-copy", "--", shareCommand]
         copyProc.running = true
-        flash("Copied to the clipboard")
         break
       case "folder":
         Quickshell.execDetached(["xdg-open", engine.home + "/.local/share/ress/profile"])
@@ -142,6 +141,8 @@ Panel {
   Service {
     id: engine
     panelOwned: true
+    uiActive: root.opened
+    staleHours: Math.max(1, Math.min(720, parseInt(root.setting("staleHours", 48), 10) || 48))
     onFinished: function(action, state) {
       root.flash(state === "ok"
         ? (action === "backup" ? "Backed up" : "Loadout exported")
@@ -150,7 +151,15 @@ Panel {
   }
 
   Timer { id: noticeTimer; interval: 3200; onTriggered: root.notice = "" }
-  Process { id: copyProc; running: false; command: [] }
+  Process {
+    id: copyProc
+    running: false
+    command: []
+    onExited: function(exitCode) {
+      root.flash(exitCode === 0 ? "Copied to the clipboard"
+                                : "Could not copy — wl-clipboard is not installed")
+    }
+  }
 
   IpcHandler {
     target: root.ipcTarget
@@ -184,7 +193,7 @@ Panel {
           text: "󰁯"
           font.family: root.fontFamily
           font.pixelSize: Style.bar.iconFont
-          color: engine.busy ? root.barForeground
+          color: engine.anyBusy ? root.barForeground
             : engine.freshness === "none" ? Qt.darker(root.barForeground, 1.6)
             : engine.freshness === "stale" ? Qt.darker(root.barForeground, 1.3)
             : root.barForeground
@@ -193,10 +202,10 @@ Panel {
           // state the icon can be in that you might want to wait for. The pulse
           // lives on its own property so opacity snaps back when it stops.
           property real pulse: 1.0
-          opacity: engine.busy ? pulse : 1.0
+          opacity: engine.anyBusy ? pulse : 1.0
 
           SequentialAnimation on pulse {
-            running: engine.busy
+            running: engine.anyBusy
             loops: Animation.Infinite
             NumberAnimation { to: 0.35; duration: 700; easing.type: Easing.InOutQuad }
             NumberAnimation { to: 1.0;  duration: 700; easing.type: Easing.InOutQuad }
@@ -259,7 +268,8 @@ Panel {
           PanelHero {
             width: parent.width
             title: "Resurrect"
-            meta: engine.busy ? (engine.currentStep || "Working…")
+            meta: engine.anyBusy ? (engine.currentStep || "Working…")
+              : engine.externallyBusy ? "Scheduled backup running…"
               : engine.lastBackup > 0 ? ("Backed up " + engine.agoText)
               : "Never backed up"
             foreground: root.foreground
@@ -277,7 +287,7 @@ Panel {
           // Progress only exists while something is running, and it reads the
           // real step names out of the CLI rather than guessing at a duration.
           Column {
-            visible: engine.busy
+            visible: engine.anyBusy
             width: parent.width
             spacing: Style.spacing.labelGap
 
@@ -297,8 +307,10 @@ Panel {
                 Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutQuad } }
 
                 SequentialAnimation on x {
+                  id: sweep
                   running: engine.busy && engine.currentProgress < 0
                   loops: Animation.Infinite
+                  onRunningChanged: if (!running) sweep.target.x = 0
                   NumberAnimation { from: 0; to: panelFlick.width * 0.65; duration: 900; easing.type: Easing.InOutQuad }
                   NumberAnimation { from: panelFlick.width * 0.65; to: 0; duration: 900; easing.type: Easing.InOutQuad }
                 }
@@ -368,9 +380,9 @@ Panel {
             }
 
             Text {
-              visible: engine.status && engine.status.manifest
+              visible: !!(engine.status && engine.status.manifest)
               width: parent.width
-              text: engine.status && engine.status.manifest
+              text: (engine.status && engine.status.manifest)
                 ? Model.summarize(engine.status.manifest.counts) : ""
               color: root.dim
               font.family: root.fontFamily
@@ -472,8 +484,8 @@ Panel {
             Text {
               width: parent.width
               text: "Paste a ress.sh link or a GitHub URL. Nothing is installed "
-                + "until you have seen the full list: apply only ever runs pacman, "
-                + "omarchy plugin add, omarchy webapp install and omarchy theme set. "
+                + "until you have seen the full list: apply only ever installs "
+                + "packages, adds plugins, adds web apps and sets a theme. "
                 + "A profile cannot carry a script."
               color: root.dim
               font.family: root.fontFamily
@@ -488,8 +500,12 @@ Panel {
               text: root.applyUrl
               foreground: root.foreground
               font.family: root.fontFamily
+              hasCursor: root.hasCursor("url")
               onTextChanged: root.applyUrl = text
               onAccepted: root.trigger("preview")
+              // The key catcher is blocked while this has focus, so without this
+              // Escape does nothing and the field cannot be left by keyboard.
+              Keys.onEscapePressed: keyCatcher.forceActiveFocus()
             }
 
             ActionRow {
@@ -519,7 +535,7 @@ Panel {
     property string tabId: ""
     readonly property bool selected: root.tab === tabId
 
-    hasCursor: tabButton.selected
+    current: tabButton.selected
     foreground: root.foreground
     implicitWidth: tabLabel.implicitWidth + Style.space(20)
     implicitHeight: tabLabel.implicitHeight + Style.space(10)

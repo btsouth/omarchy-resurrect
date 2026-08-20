@@ -98,7 +98,8 @@ or your Neovim setup — and confirming it is yours and not a default.
 - The final line: `This machine is yours again — in Nm Ns.`
 - The desktop afterwards.
 
-Put the real number in the README's cost table, replacing the estimate.
+Add the real number to the README's cost table, which currently reports only
+the parts measured on the source machine.
 
 No recorder ships by default. Either `sudo pacman -S wf-recorder` inside the VM,
 or record the VM window from the host — which also captures the boot and keeps a

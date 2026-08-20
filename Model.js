@@ -49,10 +49,10 @@ function parseRecord(line) {
   var parts = String(line || "").split("|")
   switch (parts[0]) {
     case "BEGIN":    return { type: "begin", action: parts[1], vault: parts[2] }
-    case "STEP":     return { type: "step", category: parts[1], state: parts[2], message: parts[3] }
+    case "STEP":     return { type: "step", category: parts[1], state: parts[2], message: parts.slice(3).join("|") }
     case "PROGRESS": return { type: "progress", category: parts[1], done: Number(parts[2]), total: Number(parts[3]) }
-    case "LOG":      return { type: "log", message: parts[1] }
-    case "DONE":     return { type: "done", state: parts[1], message: parts[2] }
+    case "LOG":      return { type: "log", message: parts.slice(1).join("|") }
+    case "DONE":     return { type: "done", state: parts[1], message: parts.slice(2).join("|") }
   }
   return null
 }

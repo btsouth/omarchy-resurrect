@@ -34,8 +34,12 @@ paths, 9 web apps:
 | | |
 |---|---|
 | Backup | **3 seconds**, a 1.3 MB vault |
-| Restore of everything except packages | **3 seconds** |
+| Restore of dotfiles, Omarchy state and web apps | **3 seconds** |
 | Packages a fresh Omarchy actually needs | **8 of 166**, ≈ 145 MB |
+
+Those three are measured on this machine. A full restore onto a genuinely fresh
+install — the one that also runs `pacman` — has not been timed yet; the
+procedure for doing it is in [docs/DEMO.md](docs/DEMO.md).
 
 Resurrect will tell you that number for your own machine, before you ever
 rebuild anything:
@@ -164,16 +168,11 @@ Apply this loadout? [y/N]
 A loadout carries Resurrect itself, so whoever applies yours can immediately
 share their own.
 
-A ress.sh link is expanded to a GitHub URL **on your machine, before any
-request is made** — so `ress apply` never actually talks to ress.sh, and a short
-link works whether or not the shortener is reachable. Plain GitHub URLs work
-everywhere a short link does.
-
 `ress.sh/gh/<user>/<repo>` is a redirect to `github.com/<user>/<repo>` and
-nothing else — no account, no upload, no copy of your profile. It is resolved
-**on your machine, before any request is made**, and plain GitHub URLs work
-everywhere a short link does. GitHub hosts the profile; ress.sh only shortens
-the line so it fits in a message.
+nothing else — no account, no upload, no copy of your profile. It is expanded
+**on your machine, before any request is made**, so `ress apply` never actually
+talks to ress.sh and a short link works whether or not the shortener is up.
+Plain GitHub URLs work everywhere a short link does.
 
 ---
 
@@ -197,7 +196,7 @@ keyboard-driveable:
 Bind it if you like:
 
 ```lua
-o.bind("SUPER + SHIFT + B", "Resurrect", hl.dsp.exec("omarchy-shell resurrect toggle"))
+o.bind("SUPER + SHIFT + B", "Resurrect", hl.dsp.exec("omarchy-shell tsouth89.resurrect toggle"))
 ```
 
 **Backup runs in the panel. Restore opens a terminal.** That is on purpose: a
@@ -233,7 +232,7 @@ Everything Resurrect needs is already on a stock Omarchy install:
 
 | | |
 |---|---|
-| Required | `git`, `rsync`, `jq`, `pacman` |
+| Required | `git`, `rsync`, `jq`, `curl`, `pacman` |
 | Optional | `yay` (AUR packages on restore) · `age` (encrypted secrets) · `expac` (download sizes in `ress diff --stock`) · `wl-clipboard` (copy the share link) |
 
 `ress restore` checks for the required ones before it starts and names the
@@ -309,14 +308,17 @@ Resurrect touches your package manager, so here is exactly how and why.
 no install hooks, no post-install scripts, no `sudo`. The manifest declares
 `bar-widget` and `service`; neither runs a package command on its own.
 
-**`pacman` is only ever called two ways**, both after you have seen the list:
+**`pacman` only ever *installs* two ways**, both after you have seen the list
+(it is also queried read-only in several places, which changes nothing):
 
 - `ress restore` — replays *your own* vault, and only installs what is missing.
 - `ress apply` — installs from someone else's loadout, after a full preview and
   an explicit confirmation.
 
-Neither ever removes a package. Restore's file writes keep every replaced file
-as `*.resurrect-bak`.
+Neither ever removes a package, and only one process can touch a vault at a
+time. Restore keeps every file it replaces as `*.resurrect-bak` — including the
+bar layout, web app launchers and anything restored from the encrypted secrets
+bundle.
 
 **A loadout cannot carry a secret or a script.** The profile format is one JSON
 file whose fields are names and URLs — package names, a theme name, git URLs,
@@ -325,12 +327,20 @@ a command, so there is nowhere to put one. Web apps are rebuilt from a name, a
 URL and an icon through `omarchy webapp install` rather than by copying a
 `.desktop` file, because a `.desktop` file *is* an `Exec` line.
 
-**Everything from a profile is validated before it reaches a command line.**
-Package names, plugin ids, theme names and labels must match strict patterns;
-URLs must be `https`. Entries that do not match are dropped, not quoted. In
-testing, a profile containing `; rm -rf /`, `$(whoami)`, `../../evil`,
-`file:///etc/passwd`, `Evil; touch /tmp/pwned` and an `http://` URL had all six
-silently discarded and installed nothing.
+**A vault is untrusted too.** `restore --from <git-url>` fetches one over the
+network, so everything read out of a vault gets the same treatment a shared
+loadout gets. Package names, plugin ids, theme names, unit names and labels must
+match strict patterns; remotes must be `https` (or an `ssh` git URL when
+restoring your own vault). Entries that do not match are refused with a warning,
+not quoted and passed along. Every command built from that data also gets a `--`
+end-of-options boundary, so a name can never arrive as an option.
+
+Tested against a deliberately hostile vault and a hostile loadout containing
+`; rm -rf /`, `$(whoami)`, `-U`, `--overwrite=/etc/passwd`, `../../etc/shadow`,
+a plugin id of `../../../../tmp/pwned`, a `file:///etc/passwd` remote, an
+`http://` remote, a theme name of `../../../../tmp/evil`, a `.desktop` running
+`bash -c "touch /tmp/PWNED"` and a unit name of `evil.service --now`: every
+entry refused, `$HOME` unchanged, nothing installed, nothing executed.
 
 **Apply only knows four verbs**: install a package, add a plugin, add a web app,
 set a theme. There is no fifth, and no path from profile data to a shell.
