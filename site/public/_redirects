@@ -4,5 +4,6 @@
 # ress.sh link is a shorter way to write a GitHub URL, and `ress apply` resolves
 # it locally before it makes any request at all.
 
+/gh/          /                                                                              302
 /gh/*         https://github.com/:splat                                                      302
 /repo         https://github.com/tsouth89/omarchy-resurrect                                  302

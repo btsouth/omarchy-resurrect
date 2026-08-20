@@ -64,7 +64,7 @@ Install in a minute, restore in about another. That is the whole idea.
 ```bash
 omarchy plugin add https://github.com/tsouth89/omarchy-resurrect --enable
 ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress link   # puts `ress` on your PATH
-ress init --remote git@github.com:you/my-omarchy-vault.git   # remote is optional
+ress init --remote https://github.com/you/my-omarchy-vault.git   # optional
 ress backup
 ```
 
@@ -265,7 +265,7 @@ no second source of truth:
 
 ```ini
 VAULT=/home/you/.local/share/ress/vault
-REMOTE=git@github.com:you/my-omarchy-vault.git
+REMOTE=https://github.com/you/my-omarchy-vault.git
 AUTO_BACKUP=on
 AUTO_INTERVAL_HOURS=24
 AUTO_PUSH=1
