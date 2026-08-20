@@ -34,12 +34,12 @@ paths, 9 web apps:
 | | |
 |---|---|
 | Backup | **3 seconds**, a 1.3 MB vault |
-| Restore of dotfiles, Omarchy state and web apps | **3 seconds** |
-| Packages a fresh Omarchy actually needs | **8 of 166**, ≈ 145 MB |
+| **Restore onto a fresh Omarchy VM** | **14 seconds** |
+| Packages that fresh machine actually needed | **7**, the rest it already had |
 
-Those three are measured on this machine. A full restore onto a genuinely fresh
-install — the one that also runs `pacman` — has not been timed yet; the
-procedure for doing it is in [docs/DEMO.md](docs/DEMO.md).
+The restore is a real one, timed on a clean Omarchy install: it refreshed the
+package databases, installed the seven packages the machine was missing, put the
+bar layout and theme back, and restored nine web apps and the shell plugins.
 
 Resurrect will tell you that number for your own machine, before you ever
 rebuild anything:
@@ -59,7 +59,8 @@ Distance from a stock Omarchy install
   ≈ 145 MB to download.
 ```
 
-Install in a minute, restore in about another. That is the whole idea.
+Omarchy installs in under a minute. This puts your machine back in fourteen
+seconds. That is the whole idea.
 
 ---
 

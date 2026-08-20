@@ -105,14 +105,19 @@ No recorder ships by default. Either `sudo pacman -S wf-recorder` inside the VM,
 or record the VM window from the host — which also captures the boot and keeps a
 recorder out of the machine you are presenting as fresh.
 
-## Known-untested paths
+## What the first real run found
 
-These have not been exercised end to end, so watch them during the run:
+Run on a clean Omarchy VM on 19 Aug 2026. It completed in **14 seconds**, and it
+found three bugs that no amount of local testing had:
 
-| Path | Why it is untested |
-|---|---|
-| `pacman` install with root | Only the resolution was verified, never the privileged write |
-| AUR restore via `yay` | Nothing foreign was missing on the source machine |
-| Theme restore by git clone | The source machine had no git-installed themes |
-| Plugin restore | Only the already-present branch was taken |
-| Encrypted secrets | `age` is not installed on the source machine |
+- Empty fields in the plugin list shifted every later column, because tab is IFS
+  whitespace and `read` collapses runs of it.
+- A fresh Omarchy carries the ISO's `offline.db` and none of the online package
+  databases, so every install failed with `target not found`. Checking whether
+  any database file exists is not enough; the fix installs, and refreshes and
+  retries only on failure.
+- A category that failed was still recorded as done, so "rerun to pick up where
+  it stopped" skipped the step that had failed.
+
+Still not exercised: encrypted secrets, since `age` is not installed on the
+source machine.
