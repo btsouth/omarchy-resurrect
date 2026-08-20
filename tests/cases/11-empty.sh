@@ -122,3 +122,21 @@ mv "$B/ress.json.new" "$B/ress.json"
 : >"$CALLS"
 ress --vault "$B" restore --yes --only packages
 assert_no_output "already done" "a newer backup of the same vault is new work"
+
+# ---- 6. a category name that is not a category ---------------------------
+
+# Selecting nothing used to finish with "this machine is yours again" having
+# done nothing at all, which is the same failure mode as a silent skip.
+ress --vault "$A" restore --yes --only packagez
+assert_fails "a typo in --only is refused"
+assert_output "no such category: packagez"
+assert_output "choose from:"
+assert_no_output "This machine is yours again"
+
+ress --vault "$A" restore --yes --skip pakcages
+assert_fails "a typo in --skip is refused"
+assert_output "no such category: pakcages"
+
+# The real names still work, including several at once.
+ress --vault "$A" restore --yes --restart --only packages,config
+assert_ok "a valid --only list is accepted"

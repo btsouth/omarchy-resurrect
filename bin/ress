@@ -1756,6 +1756,17 @@ cmd_restore() {
     esac
   done
 
+  # A category name that is not a category selects nothing, and a restore that
+  # selects nothing used to finish with "this machine is yours again" having
+  # done exactly nothing. A typo is not a selection.
+  local requested name known
+  for requested in ${only//,/ } ${skip//,/ }; do
+    [[ -n $requested ]] || continue
+    known=0
+    for name in "${CATEGORIES[@]}"; do [[ $name == "$requested" ]] && known=1; done
+    (( known )) || die "no such category: $requested (choose from: ${CATEGORIES[*]})"
+  done
+
   resolve_vault
   if [[ -n $from ]]; then
     from=$(normalize_source "$from")
