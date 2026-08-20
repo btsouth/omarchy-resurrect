@@ -149,7 +149,9 @@ private_dir() { mkdir -p "$1" && chmod 700 "$1" 2>/dev/null || true; }
 # The panel-owned engine and the headless scheduler are separate processes with
 # separate ideas of "busy". Without a lock they will both write the same git
 # vault; without the marker file the bar shows nothing while the scheduler runs.
+DRYRUN_VAULT=""
 ress_cleanup() {
+  [[ -n ${DRYRUN_VAULT:-} ]] && rm -rf "$DRYRUN_VAULT" 2>/dev/null
   [[ -n ${STATE_DIR:-} ]] && rm -f "$STATE_DIR/running" 2>/dev/null
   [[ -n ${APPLY_WORK:-} ]] && rm -rf "$APPLY_WORK" 2>/dev/null
   return 0
@@ -941,7 +943,22 @@ cmd_restore() {
 
   resolve_vault
   [[ -n $from ]] && from=$(normalize_source "$from")
-  if [[ -n $from ]] && (( ! DRY_RUN )) && [[ -d $VAULT/.git || -e $VAULT ]]; then
+  # A dry run must not touch anything, and fetching a vault over the top of the
+  # configured one is very much touching something: it discards local commits
+  # and repoints the remote. Preview against a throwaway clone instead.
+  if [[ -n $from ]] && (( DRY_RUN )); then
+    DRYRUN_VAULT=$(mktemp -d)
+    step_start clone "Cloning $(strip_credentials "$from") for preview"
+    if git clone -q --depth 1 -- "$from" "$DRYRUN_VAULT/vault" 2>/dev/null; then
+      VAULT="$DRYRUN_VAULT/vault"
+      step_ok clone "previewing against a temporary copy; your vault is untouched"
+    else
+      rm -rf "$DRYRUN_VAULT"; die "could not clone $(strip_credentials "$from")"
+    fi
+    from=""
+  fi
+
+  if [[ -n $from ]] && [[ -d $VAULT/.git || -e $VAULT ]]; then
     # Fetching replaces whatever vault is already here, which is a change in its
     # own right and used to happen before any prompt.
     confirm "Replace the vault at $VAULT with the one at $(plain "$(strip_credentials "$from")")?" || die "cancelled"
