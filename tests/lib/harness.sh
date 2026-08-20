@@ -119,11 +119,30 @@ ress() {
 
 # Same, with a canned answer sequence for interactive prompts. Each argument
 # before -- is one line of stdin.
+#
+# Run under script(1) for a pty: ress refuses to prompt without a terminal, so
+# a plain pipe would exercise the non-interactive path instead of the prompt.
+# The pty's \r is stripped so assertions can match ordinary text.
 ress_answer() {
   local answers=()
   while (( $# > 0 )) && [[ $1 != "--" ]]; do answers+=("$1"); shift; done
   shift || true
-  OUT=$(printf '%s\n' "${answers[@]}" | "$RESS" "$@" 2>&1)
+  local cmd; cmd=$(printf '%q ' "$RESS" "$@")
+  # Written to a file rather than captured inline: PIPESTATUS is only readable
+  # after a real pipeline, and $(a | b) makes the whole thing one command.
+  local tmp="$SANDBOX/run.out"
+  printf '%s\n' "${answers[@]:-}" | script -qe -c "$cmd" /dev/null >"$tmp" 2>&1
+  STATUS=${PIPESTATUS[1]}
+  OUT=$(tr -d '\r' <"$tmp")
+  printf '%s' "$OUT"
+  return 0
+}
+
+# A run with a terminal but no answers queued: every prompt reads EOF, which is
+# a "no". Used to prove a prompt is reached at all.
+ress_tty() {
+  local cmd; cmd=$(printf '%q ' "$RESS" "$@")
+  OUT=$(script -qe -c "$cmd" /dev/null </dev/null 2>&1 | tr -d '\r')
   STATUS=$?
   printf '%s' "$OUT"
   return 0

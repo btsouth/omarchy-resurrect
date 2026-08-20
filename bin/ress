@@ -98,6 +98,9 @@ declare -A CFG=(
   [SECRETS_MODE]="passphrase"
   [SECRETS_RECIPIENT]=""
   [PROFILE_URL]=""
+  # Restore writes files. The one thing it can *turn on* is a systemd user
+  # unit, so that is a separate decision with its own default: ask.
+  [ENABLE_UNITS]="ask"
 )
 
 load_config() {
@@ -124,7 +127,8 @@ save_config() {
     local key
     for key in VAULT REMOTE AUTO_BACKUP AUTO_INTERVAL_HOURS AUTO_PUSH \
       INCLUDE_PACKAGES INCLUDE_CONFIG INCLUDE_OMARCHY INCLUDE_WEBAPPS \
-      INCLUDE_PLUGINS INCLUDE_SECRETS SECRETS_MODE SECRETS_RECIPIENT PROFILE_URL; do
+      INCLUDE_PLUGINS INCLUDE_SECRETS SECRETS_MODE SECRETS_RECIPIENT PROFILE_URL \
+      ENABLE_UNITS; do
       printf '%s=%s\n' "$key" "${CFG[$key]}"
     done
   } >"$tmp"
@@ -601,6 +605,15 @@ RESTORE_STATE=""
 RESTORE_FAILED=0
 FAILED_STEPS=()
 
+# Set by cmd_restore. "" leaves the decision to ENABLE_UNITS; --enable-units and
+# --no-enable-units override it for this run.
+UNITS_CHOICE=""
+# A vault fetched from a URL this machine has not used before. It is not less
+# trustworthy for being new — a fresh install restoring its owner's vault is
+# always first contact — but it is the case where nothing has been agreed to
+# yet, so nothing is assumed.
+FIRST_CONTACT=0
+
 step_done()      { grep -qxF "$1" "$RESTORE_STATE" 2>/dev/null; }
 mark_done()      { printf '%s\n' "$1" >>"$RESTORE_STATE"; }
 
@@ -695,28 +708,161 @@ restore_packages() {
 
 restore_config() {
   local dir="$VAULT/home"
-  [[ -d $dir ]] || { step_skip config "not in this vault"; return 0; }
-  local n; n=$(find "$dir" -type f | wc -l)
-  step_start config "Restoring $n files into \$HOME"
+  if [[ -d $dir ]]; then
+    local n; n=$(find "$dir" -type f | wc -l)
+    step_start config "Restoring $n files into \$HOME"
+    if (( DRY_RUN )); then
+      rsync -an --out-format='    %n' "${RSYNC_SAFE[@]}" -- "$dir/" "$HOME/"
+    else
+      rsync "${RSYNC_SAFE[@]}" -- "$dir/" "$HOME/"
+      step_ok config "$n files restored (replaced files kept as *$BAK_SUFFIX)"
+    fi
+  else
+    step_skip config "no dotfiles in this vault"
+  fi
+  # Runs even when the vault carried no dotfiles: enable-state is recorded
+  # separately from the unit files, and a vault can hold one without the other.
+  restore_user_units
+  return 0
+}
+
+# ------------------------------------------------------------------- units
+#
+# Everything else a restore does is a write: a file lands somewhere and sits
+# there until something reads it. Enabling a unit is different in kind — it is
+# the one step that arranges for code to run later, without anyone asking for
+# it again. So it is the one step that is never silent, and never implied by
+# --yes: turning it on takes ENABLE_UNITS=yes or --enable-units.
+
+# The units this vault says were enabled, minus the ones already enabled here.
+# Names come out of a vault, so they go through valid_unit before they reach a
+# systemctl command line.
+pending_units() {
+  local file="$VAULT/services/user-units.txt"
+  [[ -s $file ]] || return 0
+  have systemctl || return 0
+  local unit
+  while IFS= read -r unit; do
+    [[ -n $unit ]] || continue
+    valid_unit "$unit" || continue
+    systemctl --user is-enabled -- "$unit" >/dev/null 2>&1 && continue
+    printf '%s\n' "$unit"
+  done <"$file"
+}
+
+# A unit ress can enable is one that exists here: either restored into
+# ~/.config/systemd/user or shipped by a package.
+unit_installed() {
+  [[ -f $HOME/.config/systemd/user/$1 ]] && return 0
+  systemctl --user cat -- "$1" >/dev/null 2>&1
+}
+
+# What the unit will actually run. This is the line that makes the prompt worth
+# reading — and it comes out of a file the vault chose, so it is stripped of
+# anything that could repaint the terminal and clipped to one line.
+unit_exec() {
+  local unit="$1" file="$HOME/.config/systemd/user/$unit" line=""
+  [[ -f $file ]] && line=$(sed -n 's/^ExecStart=//p' "$file" | head -1)
+  [[ -n $line ]] || line=$(systemctl --user show -p ExecStart --value -- "$unit" 2>/dev/null | head -1)
+  line=$(plain "$line")
+  [[ ${#line} -gt 64 ]] && line="${line:0:61}..."
+  printf '%s' "$line"
+}
+
+list_units() {
+  local unit exec_line
+  for unit in "$@"; do
+    exec_line=$(unit_exec "$unit")
+    printf '    %-34s %s%s%s\n' "$unit" "$c_dim" "${exec_line:-—}" "$c_reset"
+  done
+}
+
+# Turn on the named units, reporting each one that could not be turned on.
+# Returns the number enabled through ENABLED_UNITS.
+ENABLED_UNITS=0
+enable_units() {
+  local unit
+  ENABLED_UNITS=0
+  for unit in "$@"; do
+    if ! unit_installed "$unit"; then
+      step_warn units "$unit is not installed here — skipped"
+      continue
+    fi
+    if systemctl --user enable -- "$unit" >/dev/null 2>&1; then
+      ENABLED_UNITS=$((ENABLED_UNITS + 1))
+    else
+      step_warn units "could not enable $unit"
+    fi
+  done
+  return 0
+}
+
+restore_user_units() {
+  local units=() unit
+  while IFS= read -r unit; do [[ -n $unit ]] && units+=("$unit"); done < <(pending_units)
+  (( ${#units[@]} > 0 )) || return 0
+
   if (( DRY_RUN )); then
-    rsync -an --out-format='    %n' "${RSYNC_SAFE[@]}" -- "$dir/" "$HOME/"
+    step_start units "$(plural "${#units[@]}" "user service") enabled in this vault, not here"
+    list_units "${units[@]}"
+    case "$(units_decision_kind)" in
+      yes)  note "they would be enabled" ;;
+      no)   note "they would be left disabled (ENABLE_UNITS=no)" ;;
+      ask)  note "you would be asked before any of them is enabled" ;;
+    esac
     return 0
   fi
-  rsync "${RSYNC_SAFE[@]}" -- "$dir/" "$HOME/"
-  step_ok config "$n files restored (replaced files kept as *$BAK_SUFFIX)"
 
-  local units="$VAULT/services/user-units.txt"
-  if [[ -s $units ]] && have systemctl; then
-    local unit enabled=0
-    while IFS= read -r unit; do
-      [[ -n $unit ]] || continue
-      valid_unit "$unit" || continue
-      systemctl --user is-enabled -- "$unit" >/dev/null 2>&1 && continue
-      systemctl --user enable -- "$unit" >/dev/null 2>&1 && enabled=$((enabled + 1))
-    done <"$units"
-    (( enabled > 0 )) && step_ok config "$enabled user services enabled"
+  case "$(units_decision_kind)" in
+    no)
+      local why="--no-enable-units"
+      [[ ${UNITS_CHOICE:-} == no ]] || why="ENABLE_UNITS=no"
+      step_skip units "$(plural "${#units[@]}" "user service") left disabled ($why) — run: ress enable-units"
+      return 0
+      ;;
+    yes)
+      step_start units "Enabling $(plural "${#units[@]}" "user service")"
+      list_units "${units[@]}"
+      enable_units "${units[@]}"
+      step_ok units "$(plural "$ENABLED_UNITS" "user service") enabled"
+      return 0
+      ;;
+  esac
+
+  # ask. Without a terminal there is nobody to ask, and --yes deliberately does
+  # not answer this one: it is the prompt for ress overwriting your files, not
+  # a standing agreement to start services from a vault.
+  if [[ ! -t 0 ]]; then
+    step_skip units "$(plural "${#units[@]}" "user service") left disabled (no terminal) — run: ress enable-units"
+    return 0
+  fi
+
+  printf '\n%s%s from this vault, enabled there and not here:%s\n\n' \
+    "$c_bold" "$(plural "${#units[@]}" "user service")" "$c_reset"
+  list_units "${units[@]}"
+  printf '\n%sEnabling them starts them with your session from now on.%s\n' "$c_dim" "$c_reset"
+  local reply
+  read -r -p "Enable $(plural "${#units[@]}" "user service")? [y/N] " reply
+  if [[ $reply == [yY]* ]]; then
+    enable_units "${units[@]}"
+    step_ok units "$(plural "$ENABLED_UNITS" "user service") enabled"
+  else
+    step_skip units "left disabled — run: ress enable-units to change your mind"
   fi
   return 0
+}
+
+# yes | no | ask — the flag wins, then the setting, and an unreadable setting
+# falls back to asking rather than to doing.
+units_decision_kind() {
+  case "${UNITS_CHOICE:-}" in
+    yes|no) printf '%s' "$UNITS_CHOICE"; return 0 ;;
+  esac
+  case "${CFG[ENABLE_UNITS]:-ask}" in
+    yes|1|on|true) printf 'yes' ;;
+    no|0|off|false) printf 'no' ;;
+    *) printf 'ask' ;;
+  esac
 }
 
 restore_omarchy() {
@@ -1095,12 +1241,20 @@ cmd_restore() {
       --only) only="${2:-}"; shift 2 ;;
       --skip) skip="${2:-}"; shift 2 ;;
       --restart) restart=1; shift ;;
+      --enable-units) UNITS_CHOICE="yes"; shift ;;
+      --no-enable-units) UNITS_CHOICE="no"; shift ;;
       *) die "unknown restore option: $1" ;;
     esac
   done
 
   resolve_vault
-  [[ -n $from ]] && from=$(normalize_source "$from")
+  if [[ -n $from ]]; then
+    from=$(normalize_source "$from")
+    # Not "is this vault safe" — a fresh install replaying its owner's vault is
+    # always first contact. It is "has this machine agreed to anything about
+    # this vault yet", which is what decides how much is assumed below.
+    same_remote "$from" "$(normalize_source "${CFG[REMOTE]:-}")" || FIRST_CONTACT=1
+  fi
   # A dry run must not touch anything, and fetching a vault over the top of the
   # configured one is very much touching something: it discards local commits
   # and repoints the remote. Preview against a throwaway clone instead.
@@ -1118,8 +1272,15 @@ cmd_restore() {
 
   if [[ -n $from ]] && [[ -d $VAULT/.git || -e $VAULT ]]; then
     # Fetching replaces whatever vault is already here, which is a change in its
-    # own right and used to happen before any prompt.
-    confirm "Replace the vault at $VAULT with the one at $(plain "$(strip_credentials "$from")")?" || die "cancelled"
+    # own right and used to happen before any prompt. Where it also moves the
+    # remote this machine backs up to, that is part of the same question rather
+    # than a second one asked later — declining half of it would leave the vault
+    # holding one machine's history and pointing at another's.
+    local replace="Replace the vault at $VAULT with the one at $(plain "$(strip_credentials "$from")")?"
+    if (( FIRST_CONTACT )) && [[ -n ${CFG[REMOTE]:-} ]] && [[ -z ${VAULT_OVERRIDE:-} ]]; then
+      replace="Replace the vault at $VAULT with the one at $(plain "$(strip_credentials "$from")"), and back up there from now on?"
+    fi
+    confirm "$replace" || die "cancelled"
   fi
   if [[ -n $from ]]; then
     if [[ -d $VAULT/.git ]]; then
@@ -1164,7 +1325,19 @@ cmd_restore() {
   if (( ! DRY_RUN )); then
     printf '%sRestoring %s%s (backed up %s) onto %s.%s\n' \
       "$c_bold" "$origin" "$c_reset$c_dim" "$created" "$(hostname)" "$c_reset"
+    (( FIRST_CONTACT )) && printf '%sThis machine has not restored from this vault before.%s\n' \
+      "$c_dim" "$c_reset"
     report_restore_preview
+    # An unpinned clone is whatever upstream contains at the moment it runs. On
+    # a vault this machine already backs up to, that is your own repository
+    # moving on. On one it has never seen, it is a second decision, so it is
+    # asked as one.
+    if (( ALLOW_UNPINNED && FIRST_CONTACT )); then
+      printf '\n%s--allow-unpinned on a vault this machine has not used before.%s\n' "$c_yellow" "$c_reset"
+      printf '  Plugins and themes with no recorded commit will be cloned at whatever\n'
+      printf '  their branch head holds when this runs — not at what was captured.\n'
+      confirm "Take branch heads from this vault?" || die "cancelled"
+    fi
     confirm "This overwrites configuration in your home directory. Continue?" ||
       die "cancelled"
     # A one-off `--vault` is a scratch restore, not a change of allegiance.
@@ -1357,6 +1530,62 @@ LIST
     disable) CFG[INCLUDE_SECRETS]=0; save_config; printf 'Secrets will not be captured.\n' ;;
     *) die "unknown secrets action: $action" ;;
   esac
+}
+
+# The other half of "restore never turns anything on by itself": a way to turn
+# them on afterwards, on purpose, having read what they run.
+cmd_enable_units() {
+  local all=0 wanted=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --all|-a) all=1; shift ;;
+      --list|-l) all=2; shift ;;
+      -*) die "unknown enable-units option: $1" ;;
+      *) wanted+=("$1"); shift ;;
+    esac
+  done
+
+  resolve_vault
+  has_manifest || die "no vault at $VAULT — run: ress backup"
+  have systemctl || die "systemctl is not here, so there is nothing to enable"
+
+  local units=() unit
+  while IFS= read -r unit; do [[ -n $unit ]] && units+=("$unit"); done < <(pending_units)
+
+  # Named units are still checked against the vault: this command turns on what
+  # a backup recorded, not any unit on the machine.
+  if (( ${#wanted[@]} > 0 )); then
+    local chosen=() name found
+    for name in "${wanted[@]}"; do
+      found=0
+      for unit in "${units[@]:-}"; do [[ $unit == "$name" ]] && { chosen+=("$name"); found=1; break; }; done
+      (( found )) || printf '%s%s is not a service this vault has enabled, or it is already enabled here.%s\n' \
+        "$c_yellow" "$(plain "$name")" "$c_reset" >&2
+    done
+    units=("${chosen[@]:-}")
+  fi
+
+  if (( ${#units[@]} == 0 )) || [[ -z ${units[0]:-} ]]; then
+    printf '%sEvery user service in this vault is already enabled here.%s\n' "$c_green" "$c_reset"
+    return 0
+  fi
+
+  printf '%s%s from this vault, not enabled here:%s\n\n' \
+    "$c_bold" "$(plural "${#units[@]}" "user service")" "$c_reset"
+  list_units "${units[@]}"
+  printf '\n'
+
+  if (( all == 2 )); then return 0; fi
+  if (( ! all )); then
+    confirm "Enable $(plural "${#units[@]}" "user service")?" || { printf 'Nothing was enabled.\n'; return 0; }
+  fi
+
+  enable_units "${units[@]}"
+  printf '%s%s enabled.%s\n' "$c_green" "$(plural "$ENABLED_UNITS" "user service")" "$c_reset"
+  (( ENABLED_UNITS > 0 )) &&
+    printf '%sEnabled means "starts with your next session". `systemctl --user start <unit>` starts one now.%s\n' \
+      "$c_dim" "$c_reset"
+  return 0
 }
 
 # The plugin lives under ~/.config/omarchy/plugins, which is not on anyone's
@@ -1654,6 +1883,17 @@ strip_credentials() {
   local url="$1"
   [[ $url =~ ^([a-z]+://)([^/@]*@)(.*)$ ]] && url="${BASH_REMATCH[1]}${BASH_REMATCH[3]}"
   printf '%s' "$url"
+}
+
+# Two spellings of the same repository. Compared after credentials, a trailing
+# .git and a trailing slash are taken off, because none of the three changes
+# where the URL points.
+same_remote() {
+  local a b
+  a=$(strip_credentials "$1"); b=$(strip_credentials "$2")
+  a="${a%.git}"; b="${b%.git}"
+  a="${a%/}";    b="${b%/}"
+  [[ -n $a && $a == "$b" ]]
 }
 
 # The paste-me form of a repo URL, for `ress share`.
@@ -2103,6 +2343,7 @@ case "$command" in
   secrets) cmd_secrets "$@" ;;
   doctor)  cmd_doctor "$@" ;;
   link)    cmd_link "$@" ;;
+  enable-units) cmd_enable_units "$@" ;;
   ""|help) usage ;;
   *)       die "unknown command: $command (try --help)" ;;
 esac
