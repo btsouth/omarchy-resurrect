@@ -59,18 +59,27 @@ On the fresh machine, from a terminal. Two commands, no pipe into a shell:
 omarchy plugin add https://github.com/tsouth89/omarchy-resurrect --yes
 
 time ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress restore \
-  --vault /path/to/shared/ress-vault --yes
+  --vault /path/to/shared/ress-vault --yes --aur --enable-units
 ```
 
 With a git remote instead, swap the second line for:
 
 ```bash
 time ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress restore \
-  --from https://github.com/tsouth89/omarchy-vault --yes
+  --from https://github.com/tsouth89/omarchy-vault --yes --aur --enable-units
 ```
 
-It will ask for your password once, for `pacman`. ress prints its own
-elapsed time at the end; `time` brackets everything including the download.
+It will ask for your password once, for `pacman`.
+
+`--yes` answers ress's own question about overwriting your home directory. It
+deliberately does not answer the other two — building AUR packages and enabling
+systemd user services — so an unattended run needs `--aur --enable-units` as
+well. **For a recorded demo, leave them off and answer the prompts on camera**:
+the questions are the point, and watching one get asked is more convincing than
+a paragraph claiming it would have been.
+
+ress prints its own elapsed time at the end; `time` brackets everything
+including the download.
 
 If the AUR is slow or something times out, **run it again** — the restore is
 resumable and picks up at the step it stopped on. A rerun that completes is a
@@ -83,9 +92,16 @@ the full path below.
 
 ```bash
 ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress link
-ress restore --dry-run            # packages: "already complete - nothing to install"
+ress verify                       # the whole check, in one line, exit 0 if it matches
+```
+
+`ress verify` compares this machine against the vault category by category and
+exits non-zero if anything is missing — which is the claim being demonstrated,
+stated by the tool rather than by you. The longer form, if you want it on screen:
+
+```bash
 ress status                       # counts should match the source machine
-ress diff --stock                 # "on this machine: all of them are already installed"
+ress diff --stock                 # how far this machine was from a fresh install
 pacman -Qq | wc -l                # package count in the same range
 ls ~/.local/share/applications/   # your web apps
 omarchy theme list                # your themes
@@ -100,11 +116,9 @@ or your Neovim setup — and confirming it is yours and not a default.
 ## 5. What to record
 
 - The **whole run** as one take, failures included.
-- The final line: `This machine is yours again — in Nm Ns.`
+- The final line: `This machine is yours again — in 14s.`
+- `ress verify` afterwards, saying it matches.
 - The desktop afterwards.
-
-Add the real number to the README's cost table, which currently reports only
-the parts measured on the source machine.
 
 No recorder ships by default. Either `sudo pacman -S wf-recorder` inside the VM,
 or record the VM window from the host — which also captures the boot and keeps a
