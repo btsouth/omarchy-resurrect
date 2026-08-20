@@ -108,6 +108,9 @@ declare -A CFG=(
   # And the one thing it can *build* is an AUR package. Same reasoning, same
   # default.
   [AUR]="ask"
+  # warn | block | off. What to do when a capture looks like it picked up a
+  # credential.
+  [SECRET_SCAN]="warn"
 )
 
 load_config() {
@@ -135,7 +138,7 @@ save_config() {
     for key in VAULT REMOTE AUTO_BACKUP AUTO_INTERVAL_HOURS AUTO_PUSH \
       INCLUDE_PACKAGES INCLUDE_CONFIG INCLUDE_OMARCHY INCLUDE_WEBAPPS \
       INCLUDE_PLUGINS INCLUDE_SECRETS SECRETS_MODE SECRETS_RECIPIENT PROFILE_URL \
-      ENABLE_UNITS AUR; do
+      ENABLE_UNITS AUR SECRET_SCAN; do
       printf '%s=%s\n' "$key" "${CFG[$key]}"
     done
   } >"$tmp"
@@ -497,6 +500,127 @@ merged_list_file() {
   sed -e 's/[[:space:]]*$//' -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$1"
 }
 
+# ============================================================== SECRET SCAN
+#
+# The capture list is an allowlist, and credentials are deliberately not on it.
+# That is the design, and it is not the same as a guarantee: the risk that is
+# left is a key inside a file that does belong in the vault. A token pasted into
+# a script in ~/.local/bin, an Environment= line in a user unit, a helper that
+# writes into ~/.config/git. Those travel with the config they live in.
+#
+# So the vault is read back before it is committed, looking for the shapes
+# credentials actually have. Nothing here is clever: it is a list of the prefixes
+# that vendors chose to make their tokens recognisable, plus assignments that
+# name themselves. It will not find a secret with no shape to it, and it says so.
+
+declare -A SECRET_RULES=(
+  [github-token]='(^|[^A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{36}([^A-Za-z0-9_]|$)'
+  [github-pat]='github_pat_[A-Za-z0-9_]{60,}'
+  [gitlab-token]='glpat-[A-Za-z0-9_-]{20,}'
+  [aws-access-key]='(^|[^A-Z0-9])(AKIA|ASIA)[0-9A-Z]{16}([^A-Z0-9]|$)'
+  [slack-token]='xox[baprs]-[A-Za-z0-9-]{10,}'
+  [openai-key]='(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9]{32,}'
+  [anthropic-key]='sk-ant-[A-Za-z0-9_-]{20,}'
+  [google-api-key]='(^|[^A-Za-z0-9_])AIza[0-9A-Za-z_-]{35}'
+  [npm-token]='(^|[^A-Za-z0-9_])npm_[A-Za-z0-9]{36}'
+  [digitalocean-token]='dop_v1_[a-f0-9]{64}'
+  [huggingface-token]='(^|[^A-Za-z0-9_])hf_[A-Za-z0-9]{34}'
+  [stripe-key]='(^|[^A-Za-z0-9_])sk_live_[A-Za-z0-9]{20,}'
+  [pypi-token]='pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{20,}'
+  [private-key]='-----BEGIN [A-Z ]*PRIVATE KEY-----'
+  [named-assignment]='^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*(TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|API_KEY|ACCESS_KEY)[A-Za-z0-9_]*=[^[:space:]]{8,}'
+  [systemd-environment]='^[[:space:]]*Environment=.*(TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|API_KEY|ACCESS_KEY)[A-Za-z0-9_]*='
+)
+
+# The two rules above that match a *name* rather than a shape are the ones that
+# find `GITHUB_TOKEN=` in a dotfile — and also every example, every indirection
+# through another variable, and every empty default. Those are dropped, because
+# a scanner that cries wolf is a scanner that gets turned off.
+SECRET_RULES_LOOSE=" named-assignment systemd-environment "
+
+looks_like_placeholder() {
+  local line="$1"
+  # An indirection is not a secret: $OTHER, $(cmd), `cmd`, ${x}.
+  [[ $line =~ [=\"\'][[:space:]]*[\$\`] ]] && return 0
+  [[ $line =~ =[[:space:]]*(\"\"|\'\'|$) ]] && return 0
+  shopt -s nocasematch
+  local placeholder=0
+  [[ $line =~ (your[-_a-z]*|example|changeme|change-me|placeholder|redacted|dummy|todo|xxxx|\<[a-z_-]+\>|\.\.\.) ]] && placeholder=1
+  shopt -u nocasematch
+  return $(( placeholder ? 0 : 1 ))
+}
+
+# Fills SECRET_FINDINGS with "path<TAB>rule" lines, one per file per rule. The
+# matched text is never captured, printed or written down: the point is to name
+# the file, and a report that quotes the secret is a second copy of it.
+SECRET_FINDINGS=""
+secret_scan() {
+  SECRET_FINDINGS=""
+  local roots=() root
+  for root in "$@"; do [[ -d $root ]] && roots+=("$root"); done
+  (( ${#roots[@]} > 0 )) || return 0
+  have grep || return 0
+
+  # Every rule joined into one pattern for a single walk of the tree, because
+  # seventeen walks of a home directory is seventeen walks of a home directory.
+  # The per-rule pass then only reads the few files that matched anything.
+  local rule pattern combined=""
+  for rule in "${!SECRET_RULES[@]}"; do
+    combined+="${SECRET_RULES[$rule]}|"
+  done
+  local candidates=()
+  # -I skips binaries, so an encrypted blob or a font is never read as text.
+  while IFS= read -r file; do
+    [[ -n $file ]] && candidates+=("$file")
+  done < <(grep -rIlE --binary-files=without-match --exclude-dir=.git \
+    -e "${combined%|}" -- "${roots[@]}" 2>/dev/null || true)
+  (( ${#candidates[@]} > 0 )) || return 1
+
+  local hits file line found=""
+  for rule in "${!SECRET_RULES[@]}"; do
+    pattern="${SECRET_RULES[$rule]}"
+    # -H because grep leaves the filename off when it is given exactly one file,
+    # and the parse below is all filename.
+    hits=$(grep -HInE --binary-files=without-match -e "$pattern" -- "${candidates[@]}" 2>/dev/null || true)
+    [[ -n $hits ]] || continue
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      file="${line%%:*}"
+      if [[ $SECRET_RULES_LOOSE == *" $rule "* ]]; then
+        # ${line#*:*:} is the matched text, read here and kept nowhere.
+        looks_like_placeholder "${line#*:*:}" && continue
+      fi
+      found+="${file#"$VAULT/"}"$'\t'"$rule"$'\n'
+    done <<<"$hits"
+  done
+  SECRET_FINDINGS=$(printf '%s' "$found" | sort -u | grep -v '^$' || true)
+  [[ -n $SECRET_FINDINGS ]]
+}
+
+secret_scan_mode() {
+  case "${CFG[SECRET_SCAN]:-warn}" in
+    off|no|0|false) printf 'off' ;;
+    block|stop) printf 'block' ;;
+    *) printf 'warn' ;;
+  esac
+}
+
+# One place that renders findings, so `ress backup` and `ress scan` cannot drift
+# into describing the same thing two ways.
+report_secret_findings() {
+  local count; count=$(printf '%s\n' "$SECRET_FINDINGS" | grep -c . || true)
+  printf '\n%sPossible credentials in the vault (%s):%s\n\n' \
+    "$c_yellow" "$(plural "$count" file)" "$c_reset"
+  printf '%s\n' "$SECRET_FINDINGS" | awk -F'\t' 'NF { printf "    %-52s %s\n", $1, $2 }'
+  printf '\n%sThe match is not shown, and is not written down anywhere.%s\n' "$c_dim" "$c_reset"
+  printf '%sLeave one out of every future capture:%s\n' "$c_dim" "$c_reset"
+  local first; first=$(printf '%s\n' "$SECRET_FINDINGS" | head -1 | cut -f1)
+  printf '    echo %s >> %s/exclude\n' "${first#home/}" "$CONFIG_DIR"
+  printf '%sOr, if it belongs in the vault, put it in the encrypted category:%s\n' "$c_dim" "$c_reset"
+  printf '    ress secrets add %s\n' "${first#home/}"
+  return 0
+}
+
 # ================================================================== MANIFEST
 
 write_manifest() {
@@ -573,6 +697,28 @@ cmd_backup() {
   done
 
   write_manifest
+
+  # Before the commit, not after: a commit is the point at which a captured
+  # credential becomes history, and history is what gets pushed.
+  if [[ $(secret_scan_mode) != off ]]; then
+    if secret_scan "$VAULT/home" "$VAULT/omarchy"; then
+      private_dir "$STATE_DIR"
+      printf '%s\n' "$SECRET_FINDINGS" >"$STATE_DIR/secrets-found.txt"
+      chmod 600 "$STATE_DIR/secrets-found.txt" 2>/dev/null || true
+      local found; found=$(printf '%s\n' "$SECRET_FINDINGS" | grep -c . || true)
+      step_warn secrets "possible credentials in $(plural "$found" file)"
+      (( PORCELAIN )) || report_secret_findings
+      if [[ $(secret_scan_mode) == block ]]; then
+        emit "DONE|fail|blocked by the secret scan"
+        printf '\n%sNothing was committed (SECRET_SCAN=block).%s\n' "$c_red" "$c_reset"
+        printf 'The files are in the vault working tree but not in its history.\n'
+        printf 'Exclude them and run the backup again, or set SECRET_SCAN=warn to commit anyway.\n'
+        return 1
+      fi
+    else
+      rm -f "$STATE_DIR/secrets-found.txt" 2>/dev/null || true
+    fi
+  fi
 
   git_vault add -A
   if git_vault diff --cached --quiet; then
@@ -1871,6 +2017,39 @@ LIST
   esac
 }
 
+# The scan the backup runs, on demand — before a push, or after adding something
+# to the capture list and wondering what came with it.
+cmd_scan() {
+  local as_json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) as_json=1; shift ;;
+      *) die "unknown scan option: $1" ;;
+    esac
+  done
+  resolve_vault
+  has_manifest || die "no vault at $VAULT — run: ress backup"
+
+  secret_scan "$VAULT/home" "$VAULT/omarchy" || true
+
+  if (( as_json )); then
+    printf '%s\n' "$SECRET_FINDINGS" | jq -Rs '
+      split("\n") | map(select(length > 0) | split("\t") | {file: .[0], rule: .[1]})
+      | {findings: ., count: length}'
+    [[ -n $SECRET_FINDINGS ]] && return 1
+    return 0
+  fi
+
+  if [[ -z $SECRET_FINDINGS ]]; then
+    printf '%sNothing in this vault has the shape of a credential.%s\n' "$c_green" "$c_reset"
+    printf '%sThat is a check against known token formats and self-naming assignments,\nnot a proof: a secret with no shape to it looks like any other string.%s\n' \
+      "$c_dim" "$c_reset"
+    return 0
+  fi
+  report_secret_findings
+  return 1
+}
+
 # The other half of "restore never turns anything on by itself": a way to turn
 # them on afterwards, on purpose, having read what they run.
 cmd_enable_units() {
@@ -2691,6 +2870,7 @@ case "$command" in
   doctor)  cmd_doctor "$@" ;;
   link)    cmd_link "$@" ;;
   enable-units) cmd_enable_units "$@" ;;
+  scan)    cmd_scan "$@" ;;
   ""|help) usage ;;
   *)       die "unknown command: $command (try --help)" ;;
 esac
