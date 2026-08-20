@@ -3,11 +3,11 @@
 <p align="center"><strong>Bare metal to <em>your</em> machine, in one command.</strong></p>
 
 <p align="center">
-  <img src="docs/preview.png" alt="The Resurrect panel open over an Omarchy desktop, next to a terminal running ress backup">
+  <img src="docs/preview.jpg" alt="The Resurrect panel open on an Omarchy desktop, listing what a backup captures">
 </p>
 
 <p align="center">
-  <img src="docs/demo.gif" width="420" alt="Backing up a machine and exporting a shareable loadout, in real time">
+  <img src="docs/demo.gif" width="400" alt="Backing up a machine and exporting a shareable loadout, in real time">
   <br><em>A real backup: 166 packages, 27 config paths, 9 web apps — three seconds.</em>
 </p>
 
@@ -179,7 +179,7 @@ the line so it fits in a message.
 
 ## The panel
 
-<p align="center"><img src="docs/panel.png" width="420" alt="The Resurrect panel"></p>
+<p align="center"><img src="docs/panel.png" width="440" alt="The Resurrect panel"></p>
 
 A bar icon that dims as your backup gets stale, and a panel that is entirely
 keyboard-driveable:
