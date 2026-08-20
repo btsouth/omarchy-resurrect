@@ -919,7 +919,7 @@ aur_gate() {
     step_skip "$category" "$(plural "${#AUR_KEPT[@]}" "AUR package") skipped (AUR=no)"
     return 0
   fi
-  if [[ ! -t 0 ]]; then
+  if (( PORCELAIN )) || [[ ! -t 0 ]]; then
     step_skip "$category" "$(plural "${#AUR_KEPT[@]}" "AUR package") skipped — no terminal to ask at; pass --aur to build them"
     return 0
   fi
@@ -1205,7 +1205,7 @@ restore_user_units() {
   # ask. Without a terminal there is nobody to ask, and --yes deliberately does
   # not answer this one: it is the prompt for ress overwriting your files, not
   # a standing agreement to start services from a vault.
-  if [[ ! -t 0 ]]; then
+  if (( PORCELAIN )) || [[ ! -t 0 ]]; then
     step_skip units "$(plural "${#units[@]}" "user service") left disabled (no terminal) — run: ress enable-units"
     return 0
   fi
@@ -1807,7 +1807,15 @@ cmd_restore() {
   RESTORE_STATE="$STATE_DIR/restore.state"
   if (( ! DRY_RUN )); then
     (( restart )) && rm -f "$RESTORE_STATE"
-    touch "$RESTORE_STATE"
+    # Progress belongs to one snapshot of one vault. Without that line, a
+    # restore of a *different* vault read the previous one's progress and
+    # skipped every category as "already done" — silently doing nothing, which
+    # is the worst way for a restore to fail. A newer backup of the same vault
+    # starts over too: what was done was done from the old snapshot.
+    local identity="# $VAULT $(jq -r '.createdAt // "?"' "$manifest" 2>/dev/null || echo "?")"
+    if [[ ! -f $RESTORE_STATE ]] || [[ $(head -1 "$RESTORE_STATE" 2>/dev/null) != "$identity" ]]; then
+      printf '%s\n' "$identity" >"$RESTORE_STATE"
+    fi
   fi
 
   local origin; origin=$(plain "$(jq -r '.machine.hostname // "?"' "$manifest")")
