@@ -190,6 +190,17 @@ ress_cleanup() {
 }
 trap ress_cleanup EXIT
 
+# `ress set` is a read-modify-write of one small file, and the panel fires one
+# per toggle through execDetached — nine rows now write this way. Two in quick
+# succession could read the same config and the later one drop the earlier one's
+# change. This is deliberately not the vault lock: a settings change is not
+# vault work, and taking that one would make the bar show a backup running.
+take_config_lock() {
+  private_dir "$CONFIG_DIR"
+  exec 8>"$CONFIG_DIR/.lock"
+  flock -w 5 8 || true
+}
+
 take_lock() {
   private_dir "$STATE_DIR"
   exec 9>"$STATE_DIR/lock"
@@ -608,7 +619,10 @@ secret_scan() {
         # ${line#*:*:} is the matched text, read here and kept nowhere.
         looks_like_placeholder "${line#*:*:}" && continue
       fi
-      found+="${file#"$VAULT/"}"$'\t'"$rule"$'\n'
+      # The path is printed later, and a vault chooses its own filenames — a
+      # name carrying escape sequences would otherwise repaint the terminal the
+      # findings are being read in.
+      found+="$(plain "${file#"$VAULT/"}")"$'\t'"$rule"$'\n'
     done <<<"$hits"
   done
   SECRET_FINDINGS=$(printf '%s' "$found" | sort -u | grep -v '^$' || true)
@@ -728,9 +742,11 @@ cmd_backup() {
       (( PORCELAIN )) || report_secret_findings
       if [[ $(secret_scan_mode) == block ]]; then
         emit "DONE|fail|blocked by the secret scan"
-        printf '\n%sNothing was committed (SECRET_SCAN=block).%s\n' "$c_red" "$c_reset"
-        printf 'The files are in the vault working tree but not in its history.\n'
-        printf 'Exclude them and run the backup again, or set SECRET_SCAN=warn to commit anyway.\n'
+        if (( ! PORCELAIN )); then
+          printf '\n%sNothing was committed (SECRET_SCAN=block).%s\n' "$c_red" "$c_reset"
+          printf 'The files are in the vault working tree but not in its history.\n'
+          printf 'Exclude them and run the backup again, or set SECRET_SCAN=warn to commit anyway.\n'
+        fi
         return 1
       fi
     else
@@ -1567,16 +1583,33 @@ restore_secrets() {
     step_skip secrets "an encrypted archive (${size:-?}) — its contents are only readable after you decrypt it, into \$HOME with 0600 permissions"
     return 0
   fi
-  if [[ ! -t 0 ]]; then
-    step_skip secrets "needs a terminal — run: ress restore --only secrets"
+  # Only passphrase mode has anything to ask. Recipient mode is the unattended
+  # one — refusing it for want of a terminal defeated the point of having it.
+  if [[ ${CFG[SECRETS_MODE]} != recipient ]] && [[ ! -t 0 ]]; then
+    step_skip secrets "passphrase mode needs a terminal — run: ress restore --only secrets"
     return 0
   fi
 
   step_start secrets "Decrypting"
   local args=()
   if [[ ${CFG[SECRETS_MODE]} == recipient ]]; then
-    local identity="${CFG[SECRETS_RECIPIENT]%.pub}"
-    [[ -f $identity ]] || { step_fail secrets "identity file $identity not found — bring it here first"; return 0; }
+    # The private half is found by taking .pub off the public half, so
+    # SECRETS_RECIPIENT has to be a path to a key file rather than a bare
+    # `age1…` recipient. A backup accepts either — `age -r` is happy with a
+    # literal recipient — which means the mistake is only discovered here, on
+    # the machine that needs the data. Say which mistake it was.
+    local recipient="${CFG[SECRETS_RECIPIENT]}"
+    if [[ $recipient == age1* && ! -e $recipient ]]; then
+      step_fail secrets "SECRETS_RECIPIENT is a recipient string, so there is no private key to find here — point it at the .pub file sitting next to its identity, then: ress restore --only secrets"
+      RESTORE_FAILED=1
+      return 0
+    fi
+    local identity="${recipient%.pub}"
+    [[ -f $identity ]] || {
+      step_fail secrets "no identity at $identity — bring that file here, or point SECRETS_RECIPIENT at a .pub file next to it"
+      RESTORE_FAILED=1
+      return 0
+    }
     args=(-i "$identity")
   fi
 
@@ -2056,7 +2089,9 @@ declare -A CFG_CHOICES=(
 
 cmd_set() {
   (( $# > 0 )) || die "usage: ress set KEY=VALUE [KEY=VALUE...]"
-  local pair key value choice ok
+  # Validated in full before anything is written, so a run that is going to be
+  # refused is refused without having changed half the settings first.
+  local pair key value choice ok keys=() values=()
   for pair in "$@"; do
     [[ $pair == *=* ]] || die "expected KEY=VALUE, got: $pair"
     key="${pair%%=*}"; value="${pair#*=}"
@@ -2070,8 +2105,16 @@ cmd_set() {
     [[ $key == VAULT && -z $value ]] && die "VAULT cannot be empty"
     [[ $key == AUTO_INTERVAL_HOURS && ! $value =~ ^[0-9]+$ ]] &&
       die "AUTO_INTERVAL_HOURS must be a whole number of hours (got: $value)"
-    CFG[$key]="$value"
+    keys+=("$key"); values+=("$value")
   done
+
+  # Re-read inside the lock: the config may have changed between this process
+  # starting and reaching here, and writing a whole file from a stale read is
+  # how one toggle undoes another.
+  take_config_lock
+  load_config
+  local i
+  for i in "${!keys[@]}"; do CFG[${keys[$i]}]="${values[$i]}"; done
   save_config
   printf 'Saved to %s\n' "$CONFIG_FILE"
 }

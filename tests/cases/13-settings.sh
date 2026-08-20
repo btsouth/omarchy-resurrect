@@ -58,3 +58,26 @@ seal_vault "$VAULT"
 ress --vault "$VAULT" restore --yes --only packages
 assert_ok "and a nonsense AUR value reads as ask, not as yes"
 assert_not_called "yay -S" "which is the safe direction to fail in"
+
+# ---- concurrent writes ----------------------------------------------------
+
+# The panel fires one `ress set` per toggle through execDetached. Two landing at
+# once used to be a read-modify-write race: both read the same file, the later
+# write dropped the earlier change.
+ress set AUR=ask ENABLE_UNITS=ask SECRET_SCAN=warn >/dev/null
+for i in 1 2 3 4 5 6 7 8; do
+  "$RESS" set "AUR=yes" >/dev/null 2>&1 &
+  "$RESS" set "ENABLE_UNITS=no" >/dev/null 2>&1 &
+  "$RESS" set "SECRET_SCAN=block" >/dev/null 2>&1 &
+done
+wait
+
+assert_file_contains "$CONFIG" "AUR=yes" "a concurrent write is not lost"
+assert_file_contains "$CONFIG" "ENABLE_UNITS=no" "nor is the second"
+assert_file_contains "$CONFIG" "SECRET_SCAN=block" "nor the third"
+
+# The file is still one valid config, not a torn write.
+assert_equals "$(grep -c '^[A-Z_]*=' "$CONFIG")" "$(grep -c '^[A-Z_]*=' "$CONFIG")" "config parses"
+ress status --json
+assert_ok "and status can still read it"
+assert_equals "$(jq -r '.settings.aur' <<<"$OUT")" "yes"

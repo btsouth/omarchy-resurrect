@@ -503,7 +503,7 @@ Panel {
               width: parent.width
               rowId: "copy"
               glyph: ""
-              title: "Copy the share link"
+              title: "Copy the share command"
               subtitle: root.shareCommand
             }
             ActionRow {

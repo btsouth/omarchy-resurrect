@@ -59,6 +59,8 @@ ress set SECRET_SCAN=block >/dev/null
 ress --porcelain backup -m blocked
 assert_fails "porcelain backup blocked"
 assert_output "DONE|fail|blocked by the secret scan"
+assert_protocol "a blocked backup emits only records too"
+assert_no_output "Nothing was committed" "the explanation is for a person, not for the protocol"
 
 # ---- a blocked backup never pushes ---------------------------------------
 

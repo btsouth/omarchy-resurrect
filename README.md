@@ -130,7 +130,9 @@ Deliberately, and this list is the point:
   to another machine. `ress set CAPTURE_AUTOSTART=1` turns it on; the capture
   then says how many entries came with it, and a restore counts them among the
   things the vault will run.
-- **Anything over 20 MB**, caches, `node_modules`, `.venv`, `target`, build output.
+- **Anything over 20 MB** in the dotfile and Omarchy captures, along with
+  caches, `node_modules`, `.venv`, `target` and build output. (The encrypted
+  secrets bundle has no size cap — it holds exactly what you listed.)
 - **Machine identity.** Disk UUIDs, hostname, network state, hardware config.
   A restore should make a machine *yours*, not make it pretend to be another one.
 - **Your data.** Documents, photos, repos. ress captures how a machine is
@@ -168,9 +170,9 @@ This will install:
 
   2 packages from the Arch repos
       cowsay fortune-mod
-  1 shell plugins
+  1 shell plugin
       acme.widget                      https://github.com/acme/widget
-  1 web apps
+  1 web app
       Fastmail                         https://app.fastmail.com/
   theme tokyo-night (set only; nothing is cloned)
 
@@ -232,7 +234,7 @@ ress share [--name NAME]                    export a shareable loadout
 ress apply <link> [--dry-run]               install someone else's loadout
 ress verify [--json]                        check this machine against the vault
 ress scan [--json]                          look for credentials in the vault
-ress enable-units [--all|--list] [UNIT...]   turn on the services a backup recorded
+ress enable-units [--all|--list] [UNIT...]  turn on the services a backup recorded
 ress status [--json]                        what is captured, and when
 ress diff [--stock]                         what changed since the last backup,
                                             or how far this machine is from stock
@@ -243,10 +245,14 @@ ress doctor                                 check this machine is ready
 ress link                                   put `ress` on your PATH
 ```
 
-Every command is non-interactive with `--yes`, and speaks a line protocol with
-`--porcelain` — which is exactly how the panel drives it. `--yes` answers ress's
-own questions about overwriting your files; it deliberately does not answer the
-two below.
+Every command takes `--yes` for its own confirmations, and speaks a line
+protocol with `--porcelain` — which is exactly how the panel drives it. `--yes`
+answers ress's questions about overwriting your files; it deliberately does not
+answer the two below, which is why an unattended restore takes `--aur
+--enable-units` as well.
+
+`--vault DIR` works on any command, to point at a vault other than the
+configured one.
 
 `ress verify` exits non-zero when the machine does not match the vault, so it
 can be the last line of a provisioning script:
@@ -311,8 +317,8 @@ Everything ress needs is already on a stock Omarchy install:
 
 | | |
 |---|---|
-| Required | `git`, `rsync`, `jq`, `curl`, `pacman` |
-| Optional | `yay` (AUR packages on restore) · `age` (encrypted secrets) · `expac` (download sizes in `ress diff --stock`) · `wl-clipboard` (copy the share link) |
+| Required | `git`, `rsync`, `jq`, `pacman` |
+| Optional | `yay` (AUR packages on restore) · `curl` (fetching a loadout by URL; checking AUR names before you are asked about them) · `age` (encrypted secrets) · `expac` (download sizes in `ress diff --stock`) · `wl-clipboard` (copy the share command) |
 
 `ress restore` checks for the required ones before it starts and names the
 missing package if any is absent. `ress doctor` reports the whole list.
@@ -344,9 +350,11 @@ no second source of truth:
 ```ini
 VAULT=/home/you/.local/share/ress/vault
 REMOTE=https://github.com/you/my-omarchy-vault.git
-AUTO_BACKUP=on
+# Scheduled backups are off until you turn them on
+AUTO_BACKUP=off
 AUTO_INTERVAL_HOURS=24
-AUTO_PUSH=1
+AUTO_PUSH=0
+
 INCLUDE_PACKAGES=1
 INCLUDE_CONFIG=1
 INCLUDE_OMARCHY=1
@@ -363,7 +371,16 @@ SECRET_SCAN=warn
 
 # ~/.config/autostart: every entry is a command that runs at your next login
 CAPTURE_AUTOSTART=0
+
+# Encrypted secrets: a passphrase, or an age recipient (see below)
+SECRETS_MODE=passphrase
+SECRETS_RECIPIENT=
+PROFILE_URL=
 ```
+
+`ress set` refuses a value that is not one of a setting's choices, so a
+misspelled `AUR=yse` is caught when you type it rather than read as `ask` the
+next time a restore runs.
 
 Add paths in `~/.config/ress/include`, exclude patterns in
 `~/.config/ress/exclude`, and AUR packages you never want built in
@@ -387,6 +404,23 @@ ress backup            # asks for a passphrase; the vault only ever holds cipher
 The passphrase is never stored, so an unattended scheduled backup skips the
 secrets category and says so. Lose the passphrase and the blob is noise —
 that is the trade, and it is stated up front rather than in a footnote.
+
+For a backup that runs unattended, use an `age` key instead of a passphrase:
+
+```bash
+age-keygen -o ~/.config/ress/secrets.key                       # the private half
+age-keygen -y ~/.config/ress/secrets.key > ~/.config/ress/secrets.key.pub
+ress set SECRETS_MODE=recipient
+ress set SECRETS_RECIPIENT=~/.config/ress/secrets.key.pub      # a path, not an age1… string
+```
+
+Backup then encrypts to that key with no prompt. Restore finds the private half
+by taking `.pub` off that path, which is why it has to be a path: bring
+`secrets.key` to the new machine by hand. It is the one thing a vault
+deliberately cannot carry for you.
+
+`ress backup --no-secrets` skips the category for one run; `--secrets` forces it
+on for one run.
 
 ---
 
@@ -481,8 +515,9 @@ network, so everything read out of a vault gets the same treatment a shared
 loadout gets. Package names, plugin ids, theme names, unit names and labels must
 match strict patterns; remotes must be `https` (or an `ssh` git URL when
 restoring your own vault). Entries that do not match are refused with a warning,
-not quoted and passed along. Every command built from that data also gets a `--`
-end-of-options boundary, so a name can never arrive as an option.
+not quoted and passed along. Every `pacman`, `yay`, `git` and `systemctl` command
+built from that data also gets a `--` end-of-options boundary, so a name can
+never arrive as an option; the rest are safe on the validator alone.
 
 Tested against a deliberately hostile vault and a hostile loadout containing
 `; rm -rf /`, `$(whoami)`, `-U`, `--overwrite=/etc/passwd`, `../../etc/shadow`,

@@ -77,8 +77,20 @@ Item {
     return (v === undefined || v === null || v === "") ? fallback : v
   }
 
+  // The CLI's own defaults, for a machine that has never written a config file.
+  // Falling back to "off" drew all six toggles off while `ress backup` would in
+  // fact capture five of them — the panel disagreeing with the engine about
+  // what the next backup does.
+  readonly property var categoryDefaults: ({
+    packages: true, config: true, omarchy: true,
+    webapps: true, plugins: true, secrets: false
+  })
+
   function categoryEnabled(key) {
-    return setting("INCLUDE_" + key.toUpperCase(), "0") === "1"
+    var value = config["INCLUDE_" + key.toUpperCase()]
+    if (value === undefined || value === null || value === "")
+      return categoryDefaults[key] === true
+    return value === "1"
   }
 
   // ------------------------------------------------------------------ config
@@ -167,7 +179,9 @@ Item {
 
   // execDetached rather than a shared Process: assigning `command` to a Process
   // that is still running drops the write, so a second quick toggle vanished.
-  // `ress set` serialises itself on the vault lock.
+  // Two of these landing at once is safe because `ress set` takes a lock on the
+  // config file and re-reads it inside that lock — it is not the vault lock,
+  // which would make the bar show a backup running for a settings change.
   function setCategory(key, on) {
     Quickshell.execDetached([cli, "set", "INCLUDE_" + key.toUpperCase() + "=" + (on ? "1" : "0")])
   }
