@@ -23,12 +23,18 @@
 **/hosts.yml
 **/credentials
 **/credentials.json
+**/credentials.yml
 **/*.key
 **/*.pem
 **/*_token
 **/token.json
 **/.netrc
 **/known_hosts
+**/.git-credentials
+# A .env is a config file right up until it holds the key. `.config/git` itself
+# stays: a gitconfig is worth carrying, a stored credential is not.
+**/.env
+**/.env.*
 
 # systemd enable-state is captured declaratively, not as symlink farms
 **/*.wants/

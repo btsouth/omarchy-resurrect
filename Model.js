@@ -30,6 +30,12 @@ function freshness(epochSeconds, nowSeconds, staleHours) {
   return age > (staleHours || 48) * 3600 ? "stale" : "fresh"
 }
 
+// A remote may carry a token (https://TOKEN@host/…). The CLI strips it before
+// writing it to a config file; the panel strips it before putting it on screen.
+function stripCredentials(url) {
+  return String(url || "").replace(/^([a-z][a-z0-9+.-]*:\/\/)[^\/@]*@/, "$1")
+}
+
 function plural(n, one, many) {
   return n + " " + (n === 1 ? one : (many || one + "s"))
 }

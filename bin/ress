@@ -650,10 +650,15 @@ restore_packages() {
       if yay -S --needed --noconfirm --answerclean None --answerdiff None -- "${safe_foreign[@]}"; then
         step_ok packages "AUR packages installed"
       else
-        step_warn packages "some AUR packages failed — see packages/foreign.txt"
+        # A failed build is worth retrying, so this is a failure and not a
+        # warning: a warning would let the category be marked done and the
+        # rerun would skip the very step that did not finish.
+        step_fail packages "some AUR packages failed — see packages/foreign.txt"
+        RESTORE_FAILED=1
       fi
     else
-      step_warn packages "yay is not installed; skipped $f_count AUR packages"
+      step_fail packages "yay is not installed; skipped $f_count AUR packages — run: sudo pacman -S yay, then rerun"
+      RESTORE_FAILED=1
     fi
   fi
   return 0
@@ -719,6 +724,13 @@ restore_omarchy() {
           step_warn omarchy "theme $name has a malformed commit — refused"
           continue
         fi
+        # A theme is a git checkout the shell sources on every reload, so it
+        # gets the same rule a plugin gets: without a recorded commit the clone
+        # is whatever upstream contains now, not what was captured.
+        if [[ -z $tsha ]] && (( ! ALLOW_UNPINNED )); then
+          step_warn omarchy "theme $name has no recorded commit — skipped (pass --allow-unpinned to take the branch head)"
+          continue
+        fi
         if clone_pinned "$url" "$dest/themes/$name" "$tsha"; then
           installed=$((installed + 1))
         else
@@ -754,36 +766,70 @@ restore_webapps() {
   [[ -d $dir/apps ]] || { step_skip webapps "not in this vault"; return 0; }
   local n; n=$(find "$dir/apps" -name '*.desktop' | wc -l)
   step_start webapps "Restoring $n web apps"
-  (( DRY_RUN )) && { step_skip webapps "dry run"; return 0; }
+
+  # A .desktop file *is* an Exec line, so none of them are copied. Each launcher
+  # is read for a name, a URL and an icon name and rebuilt by the real installer
+  # — the same path `ress apply` takes for a stranger's loadout, and for the same
+  # reason: a vault fetched over the network chose this file's contents.
+  local rows=() desktop exec_line execs name url icon refused=0
+  for desktop in "$dir"/apps/*.desktop; do
+    [[ -f $desktop ]] || continue
+    # A second Exec= line is a Desktop Action: a command the first line does not
+    # account for, and one this cannot rebuild.
+    execs=$(grep -c '^Exec=' "$desktop" 2>/dev/null || true)
+    if [[ $execs != 1 ]]; then
+      refused=$((refused + 1)); continue
+    fi
+    exec_line=$(sed -n 's/^Exec=//p' "$desktop" | head -1)
+    url=""
+    case "$exec_line" in
+      "omarchy-launch-webapp "*)          url="${exec_line#omarchy-launch-webapp }" ;;
+      "omarchy-launch-or-focus-webapp "*) url="${exec_line#omarchy-launch-or-focus-webapp }" ;;
+    esac
+    name=$(sed -n 's/^Name=//p' "$desktop" | head -1)
+    icon=$(sed -n 's/^Icon=//p' "$desktop" | head -1)
+    # `valid_https` admits no whitespace, which is also what rules out a second
+    # argument smuggled in after the URL.
+    if ! valid_https "$url" || ! valid_label "$name"; then
+      refused=$((refused + 1)); continue
+    fi
+    valid_icon "$icon" || icon=""
+    rows+=("$name"$'\t'"$url"$'\t'"$icon")
+  done
+  (( refused == 0 )) || step_warn webapps "refused $refused launcher(s) that are not a plain omarchy-launch-webapp <url>"
+
+  if (( DRY_RUN )); then
+    printf '%s\n' "${rows[@]:-}" | awk -F'\t' 'NF { printf "    %-32s %s\n", $1, $2 }'
+    return 0
+  fi
+  if (( ${#rows[@]} > 0 )) && ! have omarchy; then
+    # Retryable: once `omarchy` is on PATH a rerun should pick this up, so it
+    # must not be marked done the way a warning would allow.
+    step_fail webapps "the omarchy CLI is not here — run: ress restore --only webapps once it is"
+    RESTORE_FAILED=1
+    return 0
+  fi
 
   mkdir -p "$HOME/.local/share/applications" "$HOME/.local/share/icons/hicolor/256x256/apps"
-
-  # A .desktop file *is* an Exec line. Capture only ever writes launchers that
-  # run `omarchy-launch-webapp`, so anything else in a vault was put there by
-  # someone else and is not copied.
-  local desktop base exec_line refused=0
-  for desktop in "$dir"/apps/*.desktop; do
-    [[ -f $desktop ]] || continue
-    base=$(basename "$desktop")
-    exec_line=$(sed -n 's/^Exec=//p' "$desktop" | head -1)
-    if [[ $exec_line != "omarchy-launch-webapp "* && $exec_line != "omarchy-launch-or-focus-webapp "* ]]; then
-      refused=$((refused + 1))
-      continue
-    fi
-    [[ -f $HOME/.local/share/applications/$base ]] &&
-      cp -p "$HOME/.local/share/applications/$base" "$HOME/.local/share/applications/$base.resurrect-bak"
-    cp "$desktop" "$HOME/.local/share/applications/$base"
-  done
-  (( refused == 0 )) || step_warn webapps "refused $refused launcher(s) that do not run omarchy-launch-webapp"
+  # Icons first: an icon *name* only resolves to a file that is already on disk,
+  # and without one the installer goes to the network for a favicon.
   [[ -d $dir/icons ]] && rsync -a --safe-links --backup --suffix=".resurrect-bak" -- "$dir/icons/" "$HOME/.local/share/icons/hicolor/256x256/apps/"
-  for desktop in "$dir"/apps/*.desktop; do
-    [[ -f $desktop ]] || continue
-    base=$(basename "$desktop")
-    [[ -f $HOME/.local/share/applications/$base ]] && chmod +x "$HOME/.local/share/applications/$base"
+
+  local row ok=0 target
+  for row in "${rows[@]:-}"; do
+    [[ -n $row ]] || continue
+    IFS=$'\t' read -r name url icon <<<"$row"
+    target="$HOME/.local/share/applications/$name.desktop"
+    [[ -f $target ]] && cp -p "$target" "$target.resurrect-bak"
+    if omarchy webapp install "$name" "$url" "${icon:-$url}" >/dev/null 2>&1; then
+      ok=$((ok + 1))
+    else
+      step_warn webapps "could not add web app $name"
+    fi
   done
   have gtk-update-icon-cache && gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" &>/dev/null || true
   have update-desktop-database && update-desktop-database "$HOME/.local/share/applications" &>/dev/null || true
-  step_ok webapps "$n web apps restored"
+  step_ok webapps "$ok of $n web apps rebuilt (replaced launchers kept as *.resurrect-bak)"
   return 0
 }
 
@@ -825,7 +871,14 @@ restore_plugins() {
       ok=$((ok + 1)); continue
     fi
     if (( DRY_RUN )); then
-      printf '    %s  %s  %s\n' "$id" "$url" "${sha:0:12}${sha:+ (pinned)}"
+      # Say which of these the real run would actually take, rather than listing
+      # an unpinned entry the pin rule below is going to skip.
+      local pin
+      if [[ -n $sha ]]; then pin="${sha:0:12} (pinned)"
+      elif (( ALLOW_UNPINNED )); then pin="branch head"
+      else pin="no commit — would be skipped"
+      fi
+      printf '    %s  %s  %s\n' "$id" "$url" "$pin"
       continue
     fi
     # An unpinned plugin is whatever upstream contains right now, which is not
@@ -843,7 +896,10 @@ restore_plugins() {
       fi
     else
       rm -rf "$target"
-      step_warn plugins "could not install $id from $url"
+      # A clone that was attempted and failed is retryable, unlike the skips
+      # above, which are decisions rather than failures.
+      step_fail plugins "could not install $id from $url"
+      RESTORE_FAILED=1
     fi
   done < <(tr '\t' '\037' <"$file")
   step_ok plugins "$ok of $total plugins in place"
@@ -914,7 +970,7 @@ restore_secrets() {
 # paths out of a vault are validated; file *contents* cannot be, so the honest
 # move is to count what will run and say so before asking.
 report_executable_content() {
-  local hooks=0 menus=0 scripts=0 units=0
+  local hooks=0 menus=0 scripts=0 units=0 autostart=0 plugins=0 git_themes=0
   [[ -d $VAULT/omarchy/hooks ]] &&
     hooks=$(find "$VAULT/omarchy/hooks" -type f ! -name '*.sample' 2>/dev/null | wc -l)
   [[ -d $VAULT/omarchy/extensions ]] &&
@@ -923,15 +979,80 @@ report_executable_content() {
     scripts=$(find "$VAULT/home/.local/bin" -type f 2>/dev/null | wc -l)
   [[ -d $VAULT/home/.config/systemd ]] &&
     units=$(find "$VAULT/home/.config/systemd" -type f -name '*.service' 2>/dev/null | wc -l)
+  # Autostart is no longer captured by default, but a vault written before that
+  # — or by someone who added it back — still carries it, and every entry is a
+  # command that runs the next time you log in.
+  [[ -d $VAULT/home/.config/autostart ]] &&
+    autostart=$(find "$VAULT/home/.config/autostart" -type f -name '*.desktop' 2>/dev/null | wc -l)
+  # Plugins and git themes are not files in the vault, they are checkouts the
+  # restore fetches. The vault names them; the code arrives from upstream.
+  [[ -f $VAULT/plugins/plugins.tsv ]] && plugins=$(count_lines "$VAULT/plugins/plugins.tsv")
+  [[ -f $VAULT/omarchy/themes.tsv ]] &&
+    git_themes=$(awk -F'\t' '$2 != "" { n++ } END { print n + 0 }' "$VAULT/omarchy/themes.tsv" 2>/dev/null || echo 0)
 
-  (( hooks + menus + scripts + units == 0 )) && return 0
+  (( hooks + menus + scripts + units + autostart + plugins + git_themes == 0 )) && return 0
 
   printf '\n%sThis vault installs things this machine will run:%s\n' "$c_bold" "$c_reset"
-  (( hooks > 0 ))   && printf '  %s — run automatically on update, boot and theme change\n' "$(plural "$hooks" "Omarchy hook")"
-  (( menus > 0 ))   && printf '  %s — menu entries are shell commands\n' "$(plural "$menus" "menu extension")"
-  (( scripts > 0 )) && printf '  %s into ~/.local/bin\n' "$(plural "$scripts" script)"
-  (( units > 0 ))   && printf '  %s\n' "$(plural "$units" "systemd user unit")"
+  (( hooks > 0 ))     && printf '  %s — run automatically on update, boot and theme change\n' "$(plural "$hooks" "Omarchy hook")"
+  (( menus > 0 ))     && printf '  %s — menu entries are shell commands\n' "$(plural "$menus" "menu extension")"
+  (( scripts > 0 ))   && printf '  %s into ~/.local/bin\n' "$(plural "$scripts" script)"
+  (( units > 0 ))     && printf '  %s\n' "$(plural "$units" "systemd user unit")"
+  (( autostart > 0 )) && printf '  %s — started automatically when you log in\n' "$(plural "$autostart" "autostart entry")"
+  (( plugins > 0 ))   && printf '  %s — cloned from git and loaded into the shell\n' "$(plural "$plugins" "shell plugin")"
+  (( git_themes > 0 )) && printf '  %s — cloned from git, sourced on every theme change\n' "$(plural "$git_themes" "git theme")"
   printf '%sRestore only a vault you trust as much as the machine it came from.%s\n' "$c_dim" "$c_reset"
+  return 0
+}
+
+# `ress apply` shows the exact list before it asks. A restore asks the same
+# question about a bigger change, so it shows the same kind of list: the package
+# names this machine does not have, and the plugins that would be cloned. Read
+# through the same validators the restore itself uses, so the preview cannot
+# name anything the restore would go on to refuse.
+report_restore_preview() {
+  local names=() plugin_ids=() line
+  if [[ -f $VAULT/packages/native.txt || -f $VAULT/packages/foreign.txt ]]; then
+    local installed; installed=$(mktemp)
+    pacman -Qq 2>/dev/null | sort >"$installed" || true
+    local want; want=$(mktemp)
+    # Only list files that exist — `sort` exits non-zero on a missing operand.
+    { [[ -f $VAULT/packages/native.txt ]] && cat -- "$VAULT/packages/native.txt"
+      [[ -f $VAULT/packages/foreign.txt ]] && cat -- "$VAULT/packages/foreign.txt"
+    } | sort -u >"$want"
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      valid_pkg "$line" && names+=("$line")
+    done < <(comm -23 "$want" "$installed" || true)
+    rm -f "$installed" "$want"
+  fi
+  if [[ -f $VAULT/plugins/plugins.tsv ]]; then
+    local id url sha
+    while IFS=$'\037' read -r id url _ sha; do
+      [[ -n $id && -n $url ]] || continue
+      valid_id "$id" && valid_git_remote "$url" || continue
+      [[ -d $HOME/.config/omarchy/plugins/$id ]] && continue
+      # Mirror the pin rule, or the preview promises a plugin the restore skips.
+      if [[ -n $sha ]]; then
+        valid_sha "$sha" || continue
+      elif (( ! ALLOW_UNPINNED )); then
+        continue
+      fi
+      plugin_ids+=("$id")
+    done < <(tr '\t' '\037' <"$VAULT/plugins/plugins.tsv")
+  fi
+
+  (( ${#names[@]} + ${#plugin_ids[@]} == 0 )) && return 0
+
+  printf '\n%sThis restore will install:%s\n' "$c_bold" "$c_reset"
+  if (( ${#names[@]} > 0 )); then
+    printf '  %s%s%s\n' "$c_green" "$(plural "${#names[@]}" package)" "$c_reset"
+    printf '%s\n' "${names[@]}" | fmt -w 72 | sed 's/^/      /'
+  fi
+  if (( ${#plugin_ids[@]} > 0 )); then
+    printf '  %s%s%s\n' "$c_green" "$(plural "${#plugin_ids[@]}" "shell plugin")" "$c_reset"
+    printf '%s\n' "${plugin_ids[@]}" | fmt -w 72 | sed 's/^/      /'
+  fi
+  printf '\n'
   return 0
 }
 
@@ -1013,6 +1134,7 @@ cmd_restore() {
   if (( ! DRY_RUN )); then
     printf '%sResurrecting %s%s (backed up %s) onto %s.%s\n' \
       "$c_bold" "$origin" "$c_reset$c_dim" "$created" "$(hostname)" "$c_reset"
+    report_restore_preview
     confirm "This overwrites configuration in your home directory. Continue?" ||
       die "cancelled"
     # A one-off `--vault` is a scratch restore, not a change of allegiance.
@@ -1764,6 +1886,19 @@ cmd_apply() {
   current_theme="${current_theme//[[:space:]]/}"
   [[ $theme_name == "$current_theme" ]] && theme_name=""
 
+  # A theme repo is code the shell sources on every reload, so the pin rule that
+  # covers plugins covers it too: with no commit to agree to there is nothing to
+  # clone, and all that is left is setting a theme that may already be here.
+  local theme_clone=0
+  if [[ -n $theme_name && -n $theme_url && ! -d $HOME/.config/omarchy/themes/$theme_name ]]; then
+    if [[ -n $theme_sha ]] || (( ALLOW_UNPINNED )); then
+      theme_clone=1
+    else
+      step_warn apply "theme $theme_name names no commit — it will not be cloned (pass --allow-unpinned to take the branch head)"
+      theme_url=""
+    fi
+  fi
+
   local total=$(( n_native + n_aur + ${#plugin_rows[@]} + ${#webapp_rows[@]} ))
   if (( total == 0 )) && [[ -z $theme_name ]]; then
     printf '\n%s%s%s — by %s\n\n' "$c_bold" "$name" "$c_reset" "$author"
@@ -1791,7 +1926,12 @@ cmd_apply() {
     printf '  %s%s%s\n' "$c_green" "$(plural "${#webapp_rows[@]}" "web app")" "$c_reset"
     printf '%s\n' "${webapp_rows[@]}" | awk -F'\t' '{printf "      %-32s %s\n", $1, $2}'
   fi
-  [[ -n $theme_name ]] && printf '  %stheme%s %s\n' "$c_green" "$c_reset" "$theme_name"
+  if (( theme_clone )); then
+    printf '  %stheme%s %s %s%s%s\n' "$c_green" "$c_reset" "$theme_name" "$c_dim" "$theme_url" "$c_reset"
+  elif [[ -n $theme_name ]]; then
+    printf '  %stheme%s %s %s(set only; nothing is cloned)%s\n' \
+      "$c_green" "$c_reset" "$theme_name" "$c_dim" "$c_reset"
+  fi
 
   printf '\n%sThis will not:%s remove anything, touch your dotfiles, run any script\n' "$c_bold" "$c_reset"
   printf '  from the profile, or read anything outside the four actions above.\n\n'
@@ -1846,7 +1986,10 @@ cmd_apply() {
   done
 
   if [[ -n $theme_name ]]; then
-    if [[ ! -d $HOME/.config/omarchy/themes/$theme_name ]] && [[ -n $theme_url ]]; then
+    # Only ever at the commit the loadout named. An unpinned theme never gets
+    # here as a clone, which leaves `theme set` — the one thing that can still
+    # succeed, because the theme may be bundled or already installed.
+    if (( theme_clone )); then
       clone_pinned "$theme_url" "$HOME/.config/omarchy/themes/$theme_name" "$theme_sha" || true
     fi
     omarchy theme set "$theme_name" >/dev/null 2>&1 &&

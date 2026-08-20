@@ -107,8 +107,8 @@ picks up at the step it stopped on.
 |---|---|---|
 | **Packages** | `pacman -Qqen` and `pacman -Qqem` | only the ones missing here get installed |
 | **Dotfiles** | a curated list under `$HOME` — shells, Hyprland, terminals, editors | rsync, with every replaced file kept as `*.resurrect-bak` |
-| **Omarchy** | `shell.json` bar layout, themes, hooks, extensions, branding, active theme | git themes re-cloned by URL, hand-made themes copied |
-| **Web apps** | the `.desktop` launchers made by `omarchy webapp`, plus icons | rebuilt in place |
+| **Omarchy** | `shell.json` bar layout, themes, hooks, extensions, branding, active theme | git themes re-cloned at the recorded commit, hand-made themes copied |
+| **Web apps** | the `.desktop` launchers made by `omarchy webapp`, plus icons | rebuilt through `omarchy webapp install` from the name, URL and icon — never copied |
 | **Plugins** | every shell plugin: git remote, **exact commit**, enabled state | cloned and checked out at that commit, detached |
 | **Secrets** | *off by default* — a list you write yourself | `age`-encrypted; see [Secrets](#secrets) |
 
@@ -123,6 +123,9 @@ Deliberately, and this list is the point:
 - **Credentials.** `hosts.yml`, `*.pem`, `*.key`, `.netrc`, `known_hosts` and
   friends are excluded from every capture, in every directory, always. The only
   path a secret can take is the opt-in encrypted one.
+- **`~/.config/autostart`**, by default. Every entry in it is a command that runs
+  the next time you log in, which is not something a backup should quietly hand
+  to another machine. Add it in `~/.config/ress/include` if you want it.
 - **Anything over 20 MB**, caches, `node_modules`, `.venv`, `target`, build output.
 - **Machine identity.** Disk UUIDs, hostname, network state, hardware config.
   A restore should make a machine *yours*, not make it pretend to be another one.
@@ -165,7 +168,7 @@ This will install:
       acme.widget                      https://github.com/acme/widget
   1 web apps
       Fastmail                         https://app.fastmail.com/
-  theme tokyo-night
+  theme tokyo-night (set only; nothing is cloned)
 
 This will not: remove anything, touch your dotfiles, run any script
   from the profile, or read anything outside the four actions above.
@@ -320,6 +323,8 @@ no install hooks, no post-install scripts, no `sudo`. The manifest declares
 (it is also queried read-only in several places, which changes nothing):
 
 - `ress restore` — replays *your own* vault, and only installs what is missing.
+  It prints the packages it will fetch and the plugins it will clone, and what
+  in the vault will run on this machine, before it asks.
 - `ress apply` — installs from someone else's loadout, after a full preview and
   an explicit confirmation.
 
@@ -328,32 +333,45 @@ time. Restore keeps every file it replaces as `*.resurrect-bak` — including th
 bar layout, web app launchers and anything restored from the encrypted secrets
 bundle.
 
-**A loadout cannot carry a secret or a script.** The profile format is one JSON
+**A loadout cannot embed a file or a command.** The profile format is one JSON
 file whose fields are names and URLs — package names, a theme name, git URLs,
 web app URLs. There is no field that holds file contents and no field that holds
 a command, so there is nowhere to put one. Web apps are rebuilt from a name, a
 URL and an icon through `omarchy webapp install` rather than by copying a
-`.desktop` file, because a `.desktop` file *is* an `Exec` line.
+`.desktop` file, because a `.desktop` file *is* an `Exec` line — and a restore
+rebuilds the launchers in your own vault the same way, for the same reason.
+
+That is not the same as carrying no code. A loadout names plugin and theme
+repositories and `ress apply` clones them, so somebody else's code does end up
+running in your shell. What the format buys you is that you see the repo and the
+commit before it is fetched, and that the commit cannot move afterwards.
 
 **Nothing is installed from a moving branch.** Backup records the exact commit
 each plugin and git theme was on, and restore checks that commit out detached.
 A loadout carries the same, so applying someone's setup installs the code they
-shared, not whatever they push tomorrow. An entry with no commit is skipped
-unless you pass `--allow-unpinned`.
+shared, not whatever they push tomorrow. An entry with no commit — plugin or
+theme, on restore and on apply alike — is skipped unless you pass
+`--allow-unpinned`.
 
-**Backup does not follow symlinks out of your home directory.** A link inside a
-captured path could otherwise pull in a file the exclude list was meant to keep
-out, under a different name. Anything skipped this way is listed in
-`report/symlinks-skipped.txt` rather than silently missing.
+**The dotfile capture does not follow symlinks out of your home directory.** The
+curated `$HOME` list is copied with `--safe-links`, so a link inside a captured
+path cannot pull in a file the exclude list was meant to keep out under a
+different name, and a restore drops such links on the way back in too. Anything
+skipped this way is listed in `report/symlinks-skipped.txt` rather than silently
+missing. Omarchy's own directories under `~/.config/omarchy` are captured
+separately and copied as they are.
 
 **Restoring a vault runs code, and no amount of validation changes that.**
 A machine restore installs the things that machine runs: Omarchy hooks that fire
 on update and boot, menu entries whose actions are shell commands, scripts into
-`~/.local/bin`, systemd user units. Resurrect validates every *name and path* a
-vault supplies, and it lists what will run before it asks — but it cannot
-validate file contents, and it does not pretend to. **Restore a vault only if
-you trust it as much as the machine it came from.** Applying a shared *loadout*
-is the safe direction: that format holds no file contents at all.
+`~/.local/bin`, systemd user units, autostart entries if the vault carries any,
+and the plugin and git-theme repositories it names — those are real git
+checkouts, fetched from upstream at the captured commit, and the shell loads
+them. Resurrect validates every *name and path* a vault supplies, and it counts
+and lists all of the above before it asks — but it cannot validate file
+contents, and it does not pretend to. **Restore a vault only if you trust it as
+much as the machine it came from.** Applying a shared *loadout* is the narrower
+risk: that format holds no file contents at all, only pinned URLs.
 
 **Names and paths from a vault are still checked.** `restore --from <git-url>` fetches one over the
 network, so everything read out of a vault gets the same treatment a shared
@@ -371,7 +389,8 @@ a plugin id of `../../../../tmp/pwned`, a `file:///etc/passwd` remote, an
 entry refused, `$HOME` unchanged, nothing installed, nothing executed.
 
 **Apply only knows four verbs**: install a package, add a plugin, add a web app,
-set a theme. There is no fifth, and no path from profile data to a shell.
+set a theme. There is no fifth, and no field of a profile is ever run as a
+command.
 
 ## How this differs from what Omarchy already has
 

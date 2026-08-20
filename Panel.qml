@@ -111,11 +111,13 @@ Panel {
         break
       case "preview":
         if (applyUrl === "") { flash("Paste a profile URL first"); break }
-        Quickshell.execDetached(["omarchy-launch-terminal", engine.cli, "apply", applyUrl, "--dry-run"])
+        // `--` last: a pasted URL is user input, and end-of-options is what
+        // stops one that starts with a dash from arriving as a flag.
+        Quickshell.execDetached(["omarchy-launch-terminal", engine.cli, "apply", "--dry-run", "--", applyUrl])
         break
       case "apply":
         if (applyUrl === "") { flash("Paste a profile URL first"); break }
-        Quickshell.execDetached(["omarchy-launch-terminal", engine.cli, "apply", applyUrl])
+        Quickshell.execDetached(["omarchy-launch-terminal", engine.cli, "apply", "--", applyUrl])
         root.close()
         break
     }
@@ -429,7 +431,9 @@ Panel {
 
             Text {
               width: parent.width
-              text: engine.remote !== "" ? ("Pushes to " + engine.remote) : ("Vault: " + engine.vault)
+              text: engine.remote !== ""
+                ? ("Pushes to " + Model.stripCredentials(engine.remote))
+                : ("Vault: " + engine.vault)
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption

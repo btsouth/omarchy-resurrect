@@ -51,8 +51,10 @@
 .config/fontconfig
 .config/mimeapps.list
 .config/user-dirs.dirs
-.config/autostart
 .config/systemd/user
+# .config/autostart is deliberately not here: every entry in it is a command
+# that runs the next time you log in. Add it back in ~/.config/ress/include if
+# that is what you want.
 
 # ---- your own scripts ------------------------------------------------------
 .local/bin

@@ -210,12 +210,14 @@
       <p>Every package, plugin and web app is listed before anything is installed. Nothing is ever removed.</p>
     </div>
     <div>
-      <h3>Profiles can't carry code</h3>
-      <p>The format holds names and URLs. There is no field for file contents and none for a command.</p>
+      <h3>Profiles can't embed code</h3>
+      <p>The format holds names and URLs: no field for file contents, none for a command.
+        The plugin and theme URLs in it still install code — pinned to the commit you
+        were shown, so it cannot change after you agreed to it.</p>
     </div>
     <div>
       <h3>Four verbs, no fifth</h3>
-      <p>Install a package, add a plugin, add a web app, set a theme. There is no path from profile data to a shell.</p>
+      <p>Install a package, add a plugin, add a web app, set a theme. No field of a profile is ever run as a command.</p>
     </div>
     <div>
       <h3>Credentials never travel</h3>
