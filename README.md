@@ -3,11 +3,11 @@
 <p align="center"><strong>Bare metal to <em>your</em> machine, in one command.</strong></p>
 
 <p align="center">
-  <img src="docs/preview.jpg" alt="The Resurrect panel open on an Omarchy desktop, listing what a backup captures">
+  <a href="docs/preview.jpg"><img src="docs/preview.jpg" alt="The Resurrect panel open on an Omarchy desktop, listing what a backup captures"></a>
 </p>
 
 <p align="center">
-  <img src="docs/demo.gif" width="420" alt="Backing up a machine and exporting a shareable loadout, in real time">
+  <a href="docs/demo.gif"><img src="docs/demo.gif" width="420" alt="Backing up a machine and exporting a shareable loadout, in real time"></a>
   <br><em>A real backup: 166 packages, 27 config paths, 9 web apps — three seconds.</em>
 </p>
 
@@ -135,8 +135,8 @@ ress apply ress.sh/gh/someone/their-loadout # become someone else's setup
 ```
 
 <p align="center">
-  <img src="docs/share.png" width="49%" alt="The Share tab">
-  <img src="docs/apply.png" width="49%" alt="The Apply tab">
+  <a href="docs/share.png"><img src="docs/share.png" width="49%" alt="The Share tab"></a>
+  <a href="docs/apply.png"><img src="docs/apply.png" width="49%" alt="The Apply tab"></a>
 </p>
 
 `ress apply` shows you **everything** it would install — every package, every
@@ -179,7 +179,7 @@ the line so it fits in a message.
 
 ## The panel
 
-<p align="center"><img src="docs/panel.png" width="440" alt="The Resurrect panel"></p>
+<p align="center"><a href="docs/panel.png"><img src="docs/panel.png" width="440" alt="The Resurrect panel"></a></p>
 
 A bar icon that dims as your backup gets stale, and a panel that is entirely
 keyboard-driveable:

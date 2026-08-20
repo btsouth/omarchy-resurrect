@@ -63,7 +63,12 @@
   ul { padding-left: 20px; margin: 0 0 16px; max-width: 68ch; }
   li { margin-bottom: 7px; }
 
-  .shot { width: 100%; border: 1px solid var(--line); border-radius: 8px; display: block; margin: 26px 0; background: var(--panel); }
+  .shot { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; display: block; margin: 26px 0; background: var(--panel); }
+  a.zoom { display: block; border: 0; }
+  a.zoom:hover { border: 0; }
+  a.zoom:hover .shot { border-color: var(--accent); }
+  .figwrap { max-width: 380px; margin: 26px auto; }
+  .figwrap .shot { margin: 0; }
   figure { margin: 0; }
   figcaption { color: var(--dim); font-size: 13px; margin-top: -14px; margin-bottom: 26px; }
 
@@ -104,8 +109,11 @@
   </p>
 
   <figure>
-    <img class="shot" src="/preview.jpg" width="1800" height="1013"
-         alt="The Resurrect panel open on an Omarchy desktop, listing what a backup captures">
+    <a class="zoom" href="/preview.jpg" target="_blank" rel="noopener">
+      <img class="shot" src="/preview.jpg" width="1800" height="1013" loading="lazy"
+           alt="The Resurrect panel open on an Omarchy desktop, listing what a backup captures">
+    </a>
+    <figcaption>Click any image for full resolution.</figcaption>
   </figure>
 </header>
 
@@ -147,10 +155,13 @@
     install, and installs nothing until you say yes.
   </p>
 
-  <figure style="text-align:center">
-    <img class="shot" src="/demo.gif" width="760" height="1178" style="width:420px;max-width:100%"
-         alt="Backing up a machine and exporting a shareable loadout">
-    <figcaption style="text-align:center">A real backup: 166 packages, 27 config paths, 9 web apps — three seconds.</figcaption>
+  <figure class="figwrap">
+    <a class="zoom" href="/demo.gif" target="_blank" rel="noopener">
+      <img class="shot" src="/demo.gif" width="760" height="1178" loading="lazy"
+           alt="Backing up a machine and exporting a shareable loadout">
+    </a>
+    <figcaption style="text-align:center;margin-top:12px">A real backup: 166 packages, 27 config
+      paths, 9 web apps — three seconds.</figcaption>
   </figure>
 </section>
 
