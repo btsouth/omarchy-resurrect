@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "id": "tsouth89.resurrect",
-  "name": "Resurrect",
+  "name": "ress",
   "version": "1.0.0",
   "author": "Tyler South",
   "license": "MIT",
-  "description": "Capture this machine — packages, dotfiles, themes, web apps, plugins — and replay it onto a fresh Omarchy install with one command. Share the loadout as a link.",
+  "description": "Capture this machine — packages, dotfiles, themes, web apps, plugins — and replay it onto a fresh Omarchy install. Share the loadout as a link.",
   "homepage": "https://github.com/tsouth89/omarchy-resurrect",
   "kinds": ["bar-widget", "service"],
   "entryPoints": {
@@ -13,10 +13,10 @@
     "service": "Service.qml"
   },
   "barWidget": {
-    "displayName": "Resurrect",
+    "displayName": "ress",
     "description": "Backup freshness at a glance, with one button to capture this machine and one to bring it back.",
     "category": "System",
-    "aliases": ["resurrect", "backup", "restore"],
+    "aliases": ["ress", "resurrect", "backup", "restore"],
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {

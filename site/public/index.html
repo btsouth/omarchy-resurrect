@@ -3,240 +3,464 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ress.sh — bare metal to your machine, in one command</title>
-<meta name="description" content="Resurrect captures an Omarchy machine — packages, dotfiles, themes, web apps, plugins — and replays it onto a fresh install. Share your setup as a link.">
+<title>ress.sh — your Omarchy setup, as a link</title>
+<meta name="description" content="ress captures an Omarchy machine — packages, dotfiles, themes, web apps, plugins — and replays it onto a fresh install. Share your setup as a link.">
 <link rel="canonical" href="https://ress.sh/">
-<meta name="theme-color" content="#0d1117">
+<meta name="theme-color" content="#0a0b0d">
 
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 
 <meta property="og:type" content="website">
-<meta property="og:site_name" content="Resurrect">
+<meta property="og:site_name" content="ress">
 <meta property="og:url" content="https://ress.sh/">
-<meta property="og:title" content="Resurrect — bare metal to your machine, in one command">
+<meta property="og:title" content="ress — your Omarchy setup, as a link">
 <meta property="og:description" content="Capture an Omarchy machine — packages, dotfiles, themes, web apps, plugins — and replay it onto a fresh one. Share your setup as a link.">
 <meta property="og:image" content="https://ress.sh/og.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="The Resurrect panel beside the words: bare metal to your machine, in one command.">
+<meta property="og:image:alt" content="The ress panel on an Omarchy desktop.">
 
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Resurrect — bare metal to your machine, in one command">
+<meta name="twitter:title" content="ress — your Omarchy setup, as a link">
 <meta name="twitter:description" content="Capture an Omarchy machine — packages, dotfiles, themes, web apps, plugins — and replay it onto a fresh one. Share your setup as a link.">
 <meta name="twitter:image" content="https://ress.sh/og.jpg">
 <style>
   :root {
-    --bg: #0d1117;
-    --panel: #11161d;
-    --line: #1e2630;
-    --fg: #c9d1d9;
-    --dim: #7d8894;
-    --accent: #7fd1c1;
-    --warm: #e3b341;
-    --mono: ui-monospace, "JetBrainsMono Nerd Font", "JetBrains Mono", SFMono-Regular,
+    --bg: #0a0b0d;
+    --panel: #101215;
+    --raised: #15181c;
+    --line: #292d33;
+    --fg: #e5e7e9;
+    --dim: #858b93;
+    --accent: #aab9a1;
+    --accent-dark: #1a2019;
+    --warm: #bba77a;
+    --mono: "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, SFMono-Regular,
             Menlo, Consolas, "Liberation Mono", monospace;
   }
   * { box-sizing: border-box; }
-  html { -webkit-text-size-adjust: 100%; }
+  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   body {
     margin: 0;
-    background: var(--bg);
+    background:
+      linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px),
+      var(--bg);
+    background-size: 48px 48px;
     color: var(--fg);
-    font-family: var(--mono);
-    font-size: 15px;
-    line-height: 1.65;
+    font: 14px/1.65 var(--mono);
     -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 820px; margin: 0 auto; padding: 0 24px; }
-  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; }
-  a:hover { border-bottom-color: var(--accent); }
-
-  header { padding: 56px 0 56px; }
-  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 30px; }
-  .btn {
-    display: inline-flex; align-items: center; gap: 9px;
-    border: 1px solid var(--line); border-radius: 7px;
-    padding: 9px 16px; font-size: 13px; color: var(--fg);
-    background: var(--panel); white-space: nowrap; transition: border-color .15s, color .15s;
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(90deg, var(--bg) 0, transparent 12%, transparent 88%, var(--bg) 100%);
+    z-index: -1;
   }
-  .btn:hover { border-color: var(--accent); color: var(--accent); }
-  .btn .star { color: var(--warm); }
-  .mark { color: var(--dim); font-size: 13px; letter-spacing: .18em; text-transform: uppercase; }
-  h1 { font-size: clamp(30px, 6vw, 46px); line-height: 1.15; margin: 14px 0 0; font-weight: 700; letter-spacing: -.01em; }
-  h1 em { color: var(--accent); font-style: normal; }
-  .sub { color: var(--dim); margin: 18px 0 0; max-width: 62ch; }
+  ::selection { color: var(--bg); background: var(--accent); }
+  a { color: inherit; text-decoration: none; }
+  a:hover { color: var(--accent); }
+  .shell { width: min(1180px, calc(100% - 48px)); margin: 0 auto; }
 
-  pre {
-    background: var(--panel);
+  .statusbar {
+    height: 48px;
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid var(--line);
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  .statusbar .shell { display: flex; align-items: center; justify-content: space-between; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--fg); }
+  .brand-glyph { display: grid; width: 24px; height: 24px; place-items: center; color: var(--bg); background: var(--accent); font-size: 15px; }
+  .status-items { display: flex; gap: 26px; color: var(--dim); }
+  .status-items span::before { content: "●"; margin-right: 8px; color: var(--accent); font-size: 8px; }
+
+  .hero { padding: 88px 0 54px; }
+  .hero-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.08fr) minmax(360px, .92fr);
+    gap: clamp(48px, 8vw, 104px);
+    align-items: center;
+  }
+  .eyebrow, .section-id { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; }
+  h1 {
+    max-width: 760px;
+    margin: 20px 0 26px;
+    font-size: clamp(50px, 7.2vw, 94px);
+    font-weight: 650;
+    letter-spacing: -.065em;
+    line-height: .92;
+  }
+  h1 .ghost { color: transparent; -webkit-text-stroke: 1px var(--dim); }
+  .lead { max-width: 58ch; margin: 0; color: var(--dim); font-size: 16px; line-height: 1.75; }
+  .lead strong { color: var(--fg); font-weight: 500; }
+  .hero-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 34px; }
+  .button {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+    gap: 12px;
+    padding: 0 17px;
     border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 18px 20px;
-    overflow-x: auto;
-    margin: 26px 0;
-    font-size: 14px;
-    line-height: 1.8;
+    color: var(--fg);
+    background: var(--panel);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    transition: transform .15s, border-color .15s, background .15s;
   }
-  pre .c { color: var(--dim); }
-  pre .p { color: var(--accent); }
-  code { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; font-size: .93em; }
-  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+  .button:hover { transform: translateY(-2px); border-color: var(--accent); }
+  .button.primary { color: var(--bg); border-color: var(--accent); background: var(--accent); }
+  .button.primary:hover { color: var(--bg); background: #becab7; }
+  .button .key { color: var(--dim); }
+  .button.primary .key { color: #414a3c; }
 
-  section { padding: 44px 0; border-top: 1px solid var(--line); }
-  h2 { font-size: 13px; letter-spacing: .18em; text-transform: uppercase; color: var(--dim); margin: 0 0 18px; font-weight: 600; }
-  h3 { font-size: 17px; margin: 30px 0 8px; }
-  p { margin: 0 0 16px; max-width: 68ch; }
-  ul { padding-left: 20px; margin: 0 0 16px; max-width: 68ch; }
-  li { margin-bottom: 7px; }
+  .terminal {
+    position: relative;
+    border: 1px solid #343940;
+    background: rgba(15, 17, 20, .96);
+    box-shadow: 18px 18px 0 #050607, 18px 18px 0 1px var(--line);
+  }
+  .terminal::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(0deg, transparent 0 3px, rgba(255,255,255,.012) 3px 4px);
+  }
+  .terminal-bar {
+    display: flex;
+    height: 39px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 13px;
+    border-bottom: 1px solid var(--line);
+    color: var(--dim);
+    font-size: 10px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+  }
+  .terminal-dots { display: flex; gap: 6px; }
+  .terminal-dots i { width: 7px; height: 7px; border: 1px solid var(--dim); border-radius: 50%; }
+  pre { margin: 0; padding: 22px; overflow-x: auto; color: var(--fg); font: 13px/1.8 var(--mono); }
+  pre .c { color: #676d75; }
+  pre .p, pre .ok { color: var(--accent); }
+  pre .warm { color: var(--warm); }
+  .terminal-foot { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); }
+  .stat { padding: 14px 12px; border-right: 1px solid var(--line); }
+  .stat:last-child { border-right: 0; }
+  .stat b { display: block; color: var(--fg); font-size: 16px; }
+  .stat span { display: block; color: var(--dim); font-size: 9px; letter-spacing: .1em; text-transform: uppercase; }
 
-  .shot { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; display: block; margin: 26px 0; background: var(--panel); }
-  a.zoom { display: block; border: 0; }
-  a.zoom:hover { border: 0; }
-  a.zoom:hover .shot { border-color: var(--accent); }
-  .figwrap { max-width: 380px; margin: 26px auto; }
-  .figwrap .shot { margin: 0; }
-  figure { margin: 0; }
-  figcaption { color: var(--dim); font-size: 13px; margin-top: -14px; margin-bottom: 26px; }
+  .desktop { margin-top: 78px; border: 1px solid var(--line); background: var(--panel); }
+  .desktop-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 35px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--line);
+    color: var(--dim);
+    font-size: 10px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  .desktop img { display: block; width: 100%; height: auto; filter: saturate(.8) contrast(1.04); }
+  .desktop-caption { display: flex; justify-content: space-between; padding: 10px 12px; color: var(--dim); font-size: 10px; }
 
-  .link-demo { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 20px; margin: 24px 0; }
-  .link-demo .row { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
-  .link-demo .from { color: var(--warm); }
-  .link-demo .arrow { color: var(--dim); }
+  .marquee { overflow: hidden; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--accent); color: var(--bg); white-space: nowrap; }
+  .marquee-track { width: max-content; padding: 9px 0; font-size: 11px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
 
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 22px; }
-  .grid h3 { margin-top: 0; }
-  .grid p { font-size: 14px; color: var(--dim); }
+  section { padding: 94px 0; border-bottom: 1px solid var(--line); }
+  .section-grid { display: grid; grid-template-columns: minmax(210px, .38fr) minmax(0, 1fr); gap: clamp(40px, 9vw, 130px); }
+  .section-label { position: sticky; top: 30px; align-self: start; }
+  .section-label .number { display: block; margin-bottom: 20px; color: #363b42; font-size: 64px; line-height: 1; }
+  h2 { margin: 10px 0 0; font-size: 18px; font-weight: 600; letter-spacing: -.03em; }
+  h3 { margin: 0 0 10px; color: var(--fg); font-size: 15px; font-weight: 600; }
+  p { max-width: 68ch; margin: 0 0 18px; }
+  .muted { color: var(--dim); }
+  code { padding: 2px 5px; color: var(--accent); background: var(--accent-dark); font: .92em var(--mono); }
 
-  footer { padding: 48px 0 80px; color: var(--dim); font-size: 13px; border-top: 1px solid var(--line); }
+  .command-block { margin: 24px 0; border: 1px solid var(--line); background: var(--panel); }
+  .command-block .terminal-bar { background: var(--raised); }
+  .field-note { display: grid; grid-template-columns: 112px 1fr; margin-top: 28px; padding: 18px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .field-note b { color: var(--warm); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+  .field-note p { margin: 0; color: var(--dim); font-size: 13px; }
+
+  .loadout-layout { display: grid; grid-template-columns: 1fr 300px; gap: 32px; align-items: start; }
+  .share-line { margin: 30px 0; padding: 24px; border-left: 3px solid var(--accent); background: var(--panel); font-size: 14px; }
+  .share-line div + div { margin-top: 10px; color: var(--dim); }
+  .share-line .url { color: var(--warm); }
+  .phone-shot { margin: 0; border: 1px solid var(--line); background: var(--panel); }
+  .phone-shot img { display: block; width: 100%; height: auto; }
+  figcaption { padding: 12px 14px; color: var(--dim); font-size: 10px; line-height: 1.5; }
+
+  .ledger { border-top: 1px solid var(--line); }
+  .ledger-row { display: grid; grid-template-columns: 42px 230px 1fr; gap: 18px; padding: 24px 0; border-bottom: 1px solid var(--line); }
+  .ledger-row .check { color: var(--accent); }
+  .ledger-row h3 { margin: 0; }
+  .ledger-row p { margin: 0; color: var(--dim); font-size: 13px; }
+
+  footer { padding: 40px 0 72px; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+  footer .shell { display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+  footer a { color: var(--fg); }
+
+  @media (max-width: 850px) {
+    .status-items span:not(:last-child) { display: none; }
+    .hero { padding-top: 62px; }
+    .hero-grid, .section-grid, .loadout-layout { grid-template-columns: 1fr; }
+    .hero-grid { gap: 54px; }
+    .desktop { margin-top: 62px; }
+    .section-label { position: static; display: grid; grid-template-columns: 60px 1fr; align-items: end; }
+    .section-label .number { margin: 0; font-size: 44px; }
+    section { padding: 72px 0; }
+    .phone-shot { max-width: 360px; }
+  }
+  @media (max-width: 560px) {
+    .shell { width: min(100% - 28px, 1180px); }
+    .statusbar { height: 44px; }
+    .status-items { gap: 0; }
+    h1 { font-size: clamp(45px, 15vw, 67px); }
+    .hero { padding-top: 48px; }
+    .hero-grid { gap: 46px; }
+    .terminal { box-shadow: 8px 8px 0 #050607, 8px 8px 0 1px var(--line); }
+    pre { padding: 17px; font-size: 11px; }
+    .terminal-foot { grid-template-columns: 1fr 1fr; }
+    .stat:nth-child(2) { border-right: 0; }
+    .stat:last-child { display: none; }
+    .desktop { margin-top: 48px; }
+    .desktop-caption span:last-child { display: none; }
+    .field-note { grid-template-columns: 1fr; gap: 8px; }
+    .ledger-row { grid-template-columns: 28px 1fr; }
+    .ledger-row p { grid-column: 2; }
+    footer { padding-bottom: 40px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .button { transition: none; }
+  }
 </style>
 </head>
 <body>
-
-<div class="wrap">
-
-<header>
-  <div class="topbar">
-    <div class="mark">Resurrect · for Omarchy</div>
-    <a class="btn" href="https://github.com/tsouth89/omarchy-resurrect" target="_blank" rel="noopener">
-      <span class="star">★</span> Star on GitHub
+<nav class="statusbar" aria-label="Primary">
+  <div class="shell">
+    <a class="brand" href="/">
+      <span class="brand-glyph">↻</span>
+      <span>ress.sh</span>
     </a>
-  </div>
-  <h1>Bare metal to <em>your</em> machine,<br>in one command.</h1>
-  <p class="sub">
-    Omarchy installs in about a minute. Then you spend the evening putting your
-    things back. Resurrect is the other half of that minute.
-  </p>
-
-<pre><span class="c"># on the machine you like</span>
-<span class="p">$</span> ress backup
-
-<span class="c"># on the machine that has nothing</span>
-<span class="p">$</span> ress restore --from github.com/you/my-omarchy-vault</pre>
-
-  <p class="sub">
-    Packages, dotfiles, themes, web apps, shell plugins, and the systemd services
-    you had switched on. Timed at <strong>14 seconds</strong> onto a clean
-    Omarchy install. Resumable, and it never overwrites a file without keeping
-    the old one.
-  </p>
-
-  <figure>
-    <a class="zoom" href="/preview.jpg" target="_blank" rel="noopener">
-      <img class="shot" src="/preview.jpg" width="1800" height="1013" loading="lazy"
-           alt="The Resurrect panel open on an Omarchy desktop, listing what a backup captures">
-    </a>
-    <figcaption>Click any image for full resolution.</figcaption>
-  </figure>
-</header>
-
-<section>
-  <h2>Install</h2>
-<pre><span class="p">$</span> omarchy plugin add https://github.com/tsouth89/omarchy-resurrect --enable
-<span class="p">$</span> ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress link
-<span class="p">$</span> ress init --remote https://github.com/you/my-omarchy-vault.git
-<span class="p">$</span> ress backup</pre>
-  <p>
-    The vault is an ordinary git repo. Push it somewhere private, or keep it on
-    the machine. There is no account here, no server, and no service to sign up
-    for — <a href="/repo">the whole thing is a plugin and a shell script</a>.
-  </p>
-  <p>Starting from a bare TTY on a fresh install, before you have a desktop:</p>
-<pre><span class="p">$</span> omarchy plugin add https://github.com/tsouth89/omarchy-resurrect --yes
-<span class="p">$</span> ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress restore --from github.com/you/my-omarchy-vault</pre>
-</section>
-
-<section>
-  <h2>Loadouts</h2>
-  <h3>Your setup, as a link.</h3>
-  <p>
-    A loadout is your machine with your data removed: what is installed, not what
-    is in your files. One JSON file of package names, plugin repos, web app URLs
-    and a theme. Push it to a public repo and anyone can become your setup.
-  </p>
-
-  <div class="link-demo">
-    <div class="row"><span class="p">$</span> <span>ress share</span></div>
-    <div class="row" style="margin-top:10px">
-      <span class="arrow">→</span>
-      <span>ress apply <span class="from">ress.sh/gh/you/my-omarchy-loadout</span></span>
+    <div class="status-items">
+      <span>Omarchy native</span>
+      <span>Shareable loadouts</span>
+      <span>System online</span>
     </div>
   </div>
+</nav>
 
-  <p>
-    <code>ress apply</code> shows you every package, plugin and web app it would
-    install, and installs nothing until you say yes.
-  </p>
+<main>
+  <header class="hero">
+    <div class="shell">
+      <div class="hero-grid">
+        <div>
+          <div class="eyebrow">Omarchy backup + loadouts // 01</div>
+          <h1>YOUR OMARCHY<br><span class="ghost">IS NOW</span><br>A LINK.</h1>
+          <p class="lead">
+            Back up your own machine—or share its packages, plugins, web apps, and
+            theme without personal files. <strong>One setup. One link.</strong>
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#loadouts"><span class="key">[↗]</span> See loadouts</a>
+            <a class="button" href="#install"><span class="key">[↵]</span> Install</a>
+            <a class="button" href="/repo"><span class="key">[★]</span> Source on GitHub</a>
+          </div>
+        </div>
 
-  <figure class="figwrap">
-    <a class="zoom" href="/demo.gif" target="_blank" rel="noopener">
-      <img class="shot" src="/demo.gif" width="760" height="1178" loading="lazy"
-           alt="Backing up a machine and exporting a shareable loadout">
-    </a>
-    <figcaption style="text-align:center;margin-top:12px">A real backup: 166 packages, 27 config
-      paths, 9 web apps — three seconds.</figcaption>
-  </figure>
-</section>
+        <div class="terminal" aria-label="Example ress session">
+          <div class="terminal-bar">
+            <span>tty1 — ress@omarchy</span>
+            <span class="terminal-dots"><i></i><i></i><i></i></span>
+          </div>
+<pre><span class="c"># share the build, not your data</span>
+<span class="p">❯</span> ress share
+<span class="ok">✓</span> packages · plugins · web apps · theme
+<span class="ok">✓</span> no dotfiles · no keys · no home directory
 
-<section>
-  <h2>Why this is safe to run</h2>
-  <div class="grid">
-    <div>
-      <h3>Nothing at install time</h3>
-      <p>Adding the plugin clones files. No install hooks, no post-install scripts, no sudo.</p>
+<span class="c">Share this line:</span>
+<span class="warm">ress apply ress.sh/gh/you/my-omarchy</span>
+
+<span class="c"># or keep the whole machine for yourself</span>
+<span class="p">❯</span> ress backup <span class="c">▮</span></pre>
+          <div class="terminal-foot">
+            <div class="stat"><b>1 JSON</b><span>Whole loadout</span></div>
+            <div class="stat"><b>0</b><span>Personal files</span></div>
+            <div class="stat"><b>14s</b><span>Clean restore</span></div>
+          </div>
+        </div>
+      </div>
+
+      <figure class="desktop">
+        <div class="desktop-top">
+          <span>Hyprland / workspace 1</span>
+          <span>ress.panel</span>
+        </div>
+        <a href="/preview.jpg" target="_blank" rel="noopener">
+          <img src="/preview.jpg" width="1800" height="1013" loading="lazy"
+               alt="The ress panel open on an Omarchy desktop, listing what a backup captures">
+        </a>
+        <figcaption class="desktop-caption">
+          <span>Packages · dotfiles · themes · web apps · plugins · services</span>
+          <span>[ click to inspect ]</span>
+        </figcaption>
+      </figure>
     </div>
-    <div>
-      <h3>Preview, then confirm</h3>
-      <p>Every package, plugin and web app is listed before anything is installed. Nothing is ever removed.</p>
-    </div>
-    <div>
-      <h3>Profiles can't embed code</h3>
-      <p>The format holds names and URLs: no field for file contents, none for a command.
-        The plugin and theme URLs in it still install code — pinned to the commit you
-        were shown, so it cannot change after you agreed to it.</p>
-    </div>
-    <div>
-      <h3>Four verbs, no fifth</h3>
-      <p>Install a package, add a plugin, add a web app, set a theme. No field of a profile is ever run as a command.</p>
-    </div>
-    <div>
-      <h3>Credentials never travel</h3>
-      <p>Keys, tokens and <code>hosts.yml</code> are excluded from every capture. Secrets are opt-in and age-encrypted.</p>
-    </div>
-    <div>
-      <h3>ress.sh only redirects</h3>
-      <p>No storage, no accounts. GitHub hosts your profile; links are expanded on your machine before any request.</p>
+  </header>
+
+  <div class="marquee" aria-hidden="true">
+    <div class="marquee-track">
+      Share the build, not your data /// your setup is now a link /// ress.sh/gh/you/your-omarchy ///
+      no account /// no black box /// ordinary git all the way down ///
+      Share the build, not your data /// your setup is now a link /// ress.sh/gh/you/your-omarchy ///
+      no account /// no black box /// ordinary git all the way down ///
     </div>
   </div>
-</section>
+
+  <section id="loadouts">
+    <div class="shell section-grid">
+      <div class="section-label">
+        <span class="number">01</span>
+        <div>
+          <span class="section-id">Shareable loadouts</span>
+          <h2>Your setup, as a link</h2>
+        </div>
+      </div>
+      <div class="loadout-layout">
+        <div>
+          <p class="lead">
+            A loadout describes what is installed, not what is in your files.
+            It contains no dotfiles, keys, or home-directory data.
+          </p>
+          <p class="muted">
+            The profile records package names, pinned plugin repositories, web app
+            URLs, and a theme. Push it to a public repo and anyone can apply it.
+          </p>
+          <div class="share-line">
+            <div><span class="p">❯</span> ress share</div>
+            <div>↳ ress apply <span class="url">ress.sh/gh/you/my-omarchy-loadout</span></div>
+          </div>
+          <p class="muted">
+            <code>ress apply</code> previews everything it would add or change—including
+            packages, plugins, web apps, and the theme—and does nothing until you confirm.
+          </p>
+          <div class="field-note">
+            <b>What ress.sh does</b>
+            <p>It makes the link short. GitHub holds the loadout. ress expands it locally before making any request.</p>
+          </div>
+        </div>
+        <figure class="phone-shot">
+          <a href="/demo.gif" target="_blank" rel="noopener">
+            <img src="/demo.gif" width="760" height="1178" loading="lazy"
+                 alt="Backing up a machine and exporting a shareable loadout">
+          </a>
+          <figcaption>REAL RUN // 166 PKGS · 27 PATHS · 9 WEB APPS · 3 SEC</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="shell section-grid">
+      <div class="section-label">
+        <span class="number">02</span>
+        <div>
+          <span class="section-id">Field manual</span>
+          <h2>Keep the whole machine</h2>
+        </div>
+      </div>
+      <div>
+        <p class="lead">Packages, dotfiles, themes, plugins, web apps, and enabled user services—captured to an ordinary git repo.</p>
+        <div class="command-block">
+          <div class="terminal-bar"><span>Current machine</span><span>4 steps</span></div>
+<pre><span class="p">❯</span> omarchy plugin add https://github.com/tsouth89/omarchy-resurrect --enable
+<span class="p">❯</span> ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress link
+<span class="p">❯</span> ress init --remote https://github.com/you/my-omarchy-vault.git
+<span class="p">❯</span> ress backup</pre>
+        </div>
+        <p class="muted">
+          Keep the vault locally or push it somewhere private. There is no ress
+          account, server, or service to sign up for.
+        </p>
+          <div class="field-note">
+            <b>Fresh install</b>
+            <p>On a new Omarchy machine, restore from a TTY before you even have a desktop. The ISO is already installed — ress only fetches what that install is missing.</p>
+          </div>
+        <div class="command-block">
+          <div class="terminal-bar"><span>Fresh Omarchy install</span><span>tty1</span></div>
+<pre><span class="p">❯</span> omarchy plugin add https://github.com/tsouth89/omarchy-resurrect --yes
+<span class="p">❯</span> ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress restore \
+  --from https://github.com/you/my-omarchy-vault</pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="shell section-grid">
+      <div class="section-label">
+        <span class="number">03</span>
+        <div>
+          <span class="section-id">Trust model</span>
+          <h2>Read before root</h2>
+        </div>
+      </div>
+      <div>
+        <p class="lead">A recovery tool touches the bones of your system. It should explain itself without a privacy policy.</p>
+        <div class="ledger">
+          <div class="ledger-row">
+            <span class="check">[✓]</span>
+            <h3>Nothing at install time</h3>
+            <p>Adding the plugin clones files. No install hooks, post-install scripts, or sudo.</p>
+          </div>
+          <div class="ledger-row">
+            <span class="check">[✓]</span>
+            <h3>Preview, then confirm</h3>
+            <p>Everything a loadout would add or change is listed before installation. Nothing is removed.</p>
+          </div>
+          <div class="ledger-row">
+            <span class="check">[✓]</span>
+            <h3>Profiles cannot embed code</h3>
+            <p>Only names and URLs. Plugins and git themes still contain code, so they are shown and pinned to the exact commit you accepted.</p>
+          </div>
+          <div class="ledger-row">
+            <span class="check">[✓]</span>
+            <h3>Four verbs, no fifth</h3>
+            <p>Install a package, add a plugin, add a web app, set a theme. No profile field is run as a command.</p>
+          </div>
+          <div class="ledger-row">
+            <span class="check">[✓]</span>
+            <h3>Credentials never travel</h3>
+            <p>Keys, tokens and <code>hosts.yml</code> are always excluded from captures. Secrets are opt-in and age-encrypted.</p>
+          </div>
+          <div class="ledger-row">
+            <span class="check">[✓]</span>
+            <h3>ress.sh only redirects</h3>
+            <p>No storage and no accounts. GitHub hosts the profile; links expand locally before any request.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
 
 <footer>
-  <div class="wrap" style="padding:0">
-    <a href="/repo">github.com/tsouth89/omarchy-resurrect</a> · MIT ·
-    built for <a href="https://omarchy.org">Omarchy</a>
+  <div class="shell">
+    <span>ress / MIT / 2026</span>
+    <span><a href="/repo">Source</a> · built for <a href="https://omarchy.org">Omarchy</a></span>
   </div>
 </footer>
-
-</div>
 </body>
 </html>

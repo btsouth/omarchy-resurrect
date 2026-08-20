@@ -1,6 +1,6 @@
 # ress.sh
 
-The link shortener for Resurrect loadouts. It redirects and does nothing else:
+The link shortener for ress loadouts. It redirects and does nothing else:
 
 ```
 ress.sh/gh/<user>/<repo>  ->  github.com/<user>/<repo>

@@ -1,4 +1,4 @@
-# Resurrect — default capture list.
+# ress — default capture list.
 #
 # One path per line, relative to $HOME. Directories are captured recursively.
 # Add your own in ~/.config/ress/include (same format); remove

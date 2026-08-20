@@ -269,7 +269,7 @@ Panel {
           // ------------------------------------------------------------ hero
           PanelHero {
             width: parent.width
-            title: "Resurrect"
+            title: "ress"
             meta: engine.anyBusy ? (engine.currentStep || "Working…")
               : engine.externallyBusy ? "Scheduled backup running…"
               : engine.lastBackup > 0 ? ("Backed up " + engine.agoText)

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Resurrect — capture an Omarchy machine, replay it onto a fresh one.
+# ress — capture an Omarchy machine, replay it onto a fresh one.
 #
 # This is the whole engine. The Quickshell panel is a face on top of it; every
 # button there is one of these subcommands with --porcelain. That split is
@@ -110,7 +110,7 @@ save_config() {
   private_dir "$CONFIG_DIR"
   local tmp; tmp=$(mktemp "$CONFIG_DIR/.config.XXXXXX")
   {
-    echo "# Resurrect configuration. Written by \`ress set\` and by the panel."
+    echo "# ress configuration. Written by \`ress set\` and by the panel."
     echo "# Both the CLI and the Quickshell panel read this file; there is no second source."
     echo
     local key
@@ -206,9 +206,9 @@ ensure_vault_repo() {
     git_vault config user.name "$(git config --global user.name 2>/dev/null || echo "$USER")"
     git_vault config user.email "$(git config --global user.email 2>/dev/null || echo "$USER@$(hostname)")"
     printf '%s\n' \
-      "# Resurrect vault" "" \
+      "# ress vault" "" \
       "This directory is a snapshot of an Omarchy machine, written by" \
-      "[Resurrect](https://github.com/tsouth89/omarchy-resurrect)." "" \
+      "[ress](https://github.com/tsouth89/omarchy-resurrect)." "" \
       "Replay it onto a fresh install with:" "" \
       '```bash' "ress restore --vault $VAULT" '```' >"$VAULT/README.md"
   fi
@@ -1119,7 +1119,7 @@ cmd_restore() {
   take_lock
   [[ -f $VAULT/resurrect.json ]] || die "no vault at $VAULT — pass --from <git-url> or --vault <dir>"
   local schema; schema=$(jq -r '.schemaVersion // 0' "$VAULT/resurrect.json")
-  (( schema == SCHEMA )) || die "vault schema $schema is not readable by Resurrect $VERSION"
+  (( schema == SCHEMA )) || die "vault schema $schema is not readable by ress $VERSION"
 
   private_dir "$STATE_DIR"
   RESTORE_STATE="$STATE_DIR/restore.state"
@@ -1132,7 +1132,7 @@ cmd_restore() {
   report_executable_content
 
   if (( ! DRY_RUN )); then
-    printf '%sResurrecting %s%s (backed up %s) onto %s.%s\n' \
+    printf '%sRestoring %s%s (backed up %s) onto %s.%s\n' \
       "$c_bold" "$origin" "$c_reset$c_dim" "$created" "$(hostname)" "$c_reset"
     report_restore_preview
     confirm "This overwrites configuration in your home directory. Continue?" ||
@@ -1221,7 +1221,7 @@ cmd_status() {
     return 0
   fi
 
-  printf '%sResurrect%s %s\n\n' "$c_bold" "$c_reset" "$VERSION"
+  printf '%sress%s %s\n\n' "$c_bold" "$c_reset" "$VERSION"
   printf '  vault      %s\n' "$VAULT"
   printf '  remote     %s\n' "${CFG[REMOTE]:-${c_dim}none${c_reset}}"
   if (( has_vault )); then
@@ -1265,7 +1265,7 @@ cmd_init() {
   private_dir "$CONFIG_DIR"
   [[ -f $CONFIG_DIR/include ]] || printf '%s\n' \
     "# Extra paths to capture, one per line, relative to \$HOME." \
-    "# These are added to the list shipped with Resurrect." >"$CONFIG_DIR/include"
+    "# These are added to the list shipped with ress." >"$CONFIG_DIR/include"
   [[ -f $CONFIG_DIR/exclude ]] || printf '%s\n' \
     "# Extra rsync patterns to leave out of every capture." >"$CONFIG_DIR/exclude"
   printf 'Vault ready at %s\n' "$VAULT"
@@ -1347,7 +1347,7 @@ vault_is_initialised() { [[ -d "$VAULT/.git" ]]; }
 
 cmd_doctor() {
   local problems=0
-  printf '%sResurrect doctor%s\n\n' "$c_bold" "$c_reset"
+  printf '%sress doctor%s\n\n' "$c_bold" "$c_reset"
   # Takes a command, never a string to eval: an eval of an interpolated config
   # value is exactly the shape a scanner and a reviewer both stop on.
   check() {
@@ -1800,7 +1800,7 @@ fetch_profile() {
   schema=$(jq -r '.schemaVersion // 0' "$dest/profile.json")
   kind=$(jq -r '.kind // ""' "$dest/profile.json")
   [[ $kind == "omarchy-loadout" ]] || die "not an Omarchy loadout (kind: ${kind:-missing})"
-  (( schema == PROFILE_SCHEMA )) || die "loadout schema $schema is not readable by Resurrect $VERSION"
+  (( schema == PROFILE_SCHEMA )) || die "loadout schema $schema is not readable by ress $VERSION"
 }
 
 cmd_apply() {
@@ -2005,7 +2005,7 @@ cmd_apply() {
 
 usage() {
   cat <<USAGE
-${c_bold}Resurrect${c_reset} $VERSION — capture an Omarchy machine, replay it onto a fresh one.
+${c_bold}ress${c_reset} $VERSION — capture an Omarchy machine, replay it onto a fresh one.
 
   ${c_bold}ress backup${c_reset} [-m MSG] [--push] [--secrets]
       Capture this machine into the vault and commit it.

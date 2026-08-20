@@ -69,7 +69,7 @@ time ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress restore \
   --from https://github.com/tsouth89/omarchy-vault --yes
 ```
 
-It will ask for your password once, for `pacman`. Resurrect prints its own
+It will ask for your password once, for `pacman`. ress prints its own
 elapsed time at the end; `time` brackets everything including the download.
 
 If the AUR is slow or something times out, **run it again** — the restore is

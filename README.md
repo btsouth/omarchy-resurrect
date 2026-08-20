@@ -1,9 +1,9 @@
-<h1 align="center">Resurrect</h1>
+<h1 align="center">ress</h1>
 
-<p align="center"><strong>Bare metal to <em>your</em> machine, in one command.</strong></p>
+<p align="center"><strong>Fresh Omarchy to <em>your</em> machine.</strong></p>
 
 <p align="center">
-  <a href="docs/preview.jpg"><img src="docs/preview.jpg" alt="The Resurrect panel open on an Omarchy desktop, listing what a backup captures"></a>
+  <a href="docs/preview.jpg"><img src="docs/preview.jpg" alt="The ress panel open on an Omarchy desktop, listing what a backup captures"></a>
 </p>
 
 <p align="center">
@@ -15,7 +15,7 @@ Omarchy installs in about a minute. Then you spend the evening putting your
 things back: the packages, the dotfiles, the theme, the web apps, the plugins,
 the twelve small decisions you have forgotten you ever made.
 
-Resurrect is the other half of that minute.
+ress is the other half of that minute.
 
 ```bash
 ress backup                       # on the machine you like
@@ -41,7 +41,7 @@ The restore is a real one, timed on a clean Omarchy install: it refreshed the
 package databases, installed the seven packages the machine was missing, put the
 bar layout and theme back, and restored nine web apps and the shell plugins.
 
-Resurrect will tell you that number for your own machine, before you ever
+ress will tell you that number for your own machine, before you ever
 rebuild anything:
 
 ```bash
@@ -76,7 +76,7 @@ ress backup
 
 The vault is an ordinary git repo at `~/.local/share/ress/vault`. Push it
 somewhere private if you want it off the machine; keep it local if you don't.
-Nothing in Resurrect requires an account, a server, or a service.
+Nothing in ress requires an account, a server, or a service.
 
 ### On a machine that has nothing
 
@@ -129,10 +129,10 @@ Deliberately, and this list is the point:
 - **Anything over 20 MB**, caches, `node_modules`, `.venv`, `target`, build output.
 - **Machine identity.** Disk UUIDs, hostname, network state, hardware config.
   A restore should make a machine *yours*, not make it pretend to be another one.
-- **Your data.** Documents, photos, repos. Resurrect captures how a machine is
+- **Your data.** Documents, photos, repos. ress captures how a machine is
   set up, not what is on it. Use a real backup tool for real backups.
 
-Resurrect tells you what it walked past: anything under `~/.config` that is not
+ress tells you what it walked past: anything under `~/.config` that is not
 on the list is written to `report/not-captured.txt` in the vault, so "I thought
 that was backed up" is a thing you find out on the good machine, not the new one.
 
@@ -176,7 +176,7 @@ This will not: remove anything, touch your dotfiles, run any script
 Apply this loadout? [y/N]
 ```
 
-A loadout carries Resurrect itself, so whoever applies yours can immediately
+A loadout carries ress itself, so whoever applies yours can immediately
 share their own.
 
 `ress.sh/gh/<user>/<repo>` is a redirect to `github.com/<user>/<repo>` and
@@ -189,7 +189,7 @@ Plain GitHub URLs work everywhere a short link does.
 
 ## The panel
 
-<p align="center"><a href="docs/panel.png"><img src="docs/panel.png" width="440" alt="The Resurrect panel"></a></p>
+<p align="center"><a href="docs/panel.png"><img src="docs/panel.png" width="440" alt="The ress panel"></a></p>
 
 A bar icon that dims as your backup gets stale, and a panel that is entirely
 keyboard-driveable:
@@ -207,7 +207,7 @@ keyboard-driveable:
 Bind it if you like:
 
 ```lua
-o.bind("SUPER + SHIFT + B", "Resurrect", hl.dsp.exec("omarchy-shell tsouth89.resurrect toggle"))
+o.bind("SUPER + SHIFT + B", "ress", hl.dsp.exec("omarchy-shell tsouth89.resurrect toggle"))
 ```
 
 **Backup runs in the panel. Restore opens a terminal.** That is on purpose: a
@@ -239,7 +239,7 @@ Every command is non-interactive with `--yes`, and speaks a line protocol with
 
 ## Dependencies
 
-Everything Resurrect needs is already on a stock Omarchy install:
+Everything ress needs is already on a stock Omarchy install:
 
 | | |
 |---|---|
@@ -288,7 +288,7 @@ INCLUDE_SECRETS=0
 ```
 
 Add paths in `~/.config/ress/include`, exclude patterns in
-`~/.config/ress/exclude`. Both are appended to the lists Resurrect ships in
+`~/.config/ress/exclude`. Both are appended to the lists ress ships in
 `defaults/`.
 
 Scheduled backups are event-driven, not polled: the timer is set to the
@@ -313,7 +313,7 @@ that is the trade, and it is stated up front rather than in a footnote.
 
 ## Security
 
-Resurrect touches your package manager, so here is exactly how and why.
+ress touches your package manager, so here is exactly how and why.
 
 **Nothing happens at install time.** Adding the plugin clones files. There are
 no install hooks, no post-install scripts, no `sudo`. The manifest declares
@@ -367,7 +367,7 @@ on update and boot, menu entries whose actions are shell commands, scripts into
 `~/.local/bin`, systemd user units, autostart entries if the vault carries any,
 and the plugin and git-theme repositories it names — those are real git
 checkouts, fetched from upstream at the captured commit, and the shell loads
-them. Resurrect validates every *name and path* a vault supplies, and it counts
+them. ress validates every *name and path* a vault supplies, and it counts
 and lists all of the above before it asks — but it cannot validate file
 contents, and it does not pretend to. **Restore a vault only if you trust it as
 much as the machine it came from.** Applying a shared *loadout* is the narrower
@@ -395,10 +395,10 @@ command.
 ## How this differs from what Omarchy already has
 
 - **`omarchy snapshot`** is snapper on the local disk: excellent for undoing
-  this morning, useless when the disk is gone or the machine is new. Resurrect
+  this morning, useless when the disk is gone or the machine is new. ress
   is portable and machine-to-machine.
 - **The core `omarchy-backup` PR** ([#6965](https://github.com/basecamp/omarchy/pull/6965))
-  covers config, packages, themes and web apps from the CLI. Resurrect adds the
+  covers config, packages, themes and web apps from the CLI. ress adds the
   installed **plugin list**, **AUR packages** handled separately, opt-in
   **encrypted secrets**, systemd enable-state, a resumable restore, a native
   Quickshell panel, and shareable loadouts. If that PR lands, use whichever you

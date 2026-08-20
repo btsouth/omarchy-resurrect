@@ -1,4 +1,4 @@
-# Resurrect — default exclusions, applied to every captured path.
+# ress — default exclusions, applied to every captured path.
 #
 # rsync-style patterns. Add your own in ~/.config/ress/exclude.
 # The credential entries below are the reason this file exists: a dotfile
@@ -39,9 +39,10 @@
 # systemd enable-state is captured declaratively, not as symlink farms
 **/*.wants/
 
-# ---- resurrect's own artifacts ---------------------------------------------
-# Restore keeps replaced files as *.resurrect-bak. Capturing them back would
-# accumulate a backup of a backup on every round trip.
+# ---- ress's own artifacts --------------------------------------------------
+# Restore keeps replaced files as *.resurrect-bak (stable suffix; renaming it
+# would break existing vaults). Capturing them back would accumulate a backup
+# of a backup on every round trip.
 **/*.resurrect-bak
 # `ress link` recreates this symlink; capturing it copies a frozen snapshot of
 # the CLI that would then shadow the real one after a restore.
