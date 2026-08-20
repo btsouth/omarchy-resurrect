@@ -519,6 +519,13 @@ not quoted and passed along. Every `pacman`, `yay`, `git` and `systemctl` comman
 built from that data also gets a `--` end-of-options boundary, so a name can
 never arrive as an option; the rest are safe on the validator alone.
 
+One field used to escape that rule. A vault's `schemaVersion` was compared with
+`(( schema == SCHEMA ))`, and bash arithmetic is not a numeric context — it
+evaluates the contents of a bare name and performs command substitution inside
+an array subscript, so a vault declaring `CFG[$(…)]` as its schema version ran
+that command, before any prompt. Fixed in 1.1.0: a schema version must be a
+plain integer before it reaches arithmetic. **If you are on 1.0.0, update.**
+
 Tested against a deliberately hostile vault and a hostile loadout containing
 `; rm -rf /`, `$(whoami)`, `-U`, `--overwrite=/etc/passwd`, `../../etc/shadow`,
 a plugin id of `../../../../tmp/pwned`, a `file:///etc/passwd` remote, an
