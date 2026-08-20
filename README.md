@@ -578,6 +578,10 @@ face on top of it, and every button is one subcommand with `--porcelain`.
 ./tests/mutate.sh           # break each behaviour, check a test notices
 ```
 
+[docs/TESTING.md](docs/TESTING.md) covers the whole strategy, including the
+real-tools checks worth running before a release and the six things only a
+clean VM can tell you.
+
 Each case runs against a throwaway `$HOME` with test doubles on `PATH` for
 `pacman`, `yay`, `sudo`, `systemctl`, `curl` and the `omarchy` CLI, so a case
 can assert that a restore *did not* call something. Nothing outside the sandbox
