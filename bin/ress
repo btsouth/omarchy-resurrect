@@ -55,7 +55,7 @@ step_start() { emit "STEP|$1|start|$2"; (( PORCELAIN )) || printf '%s▸ %s%s %s
 step_ok()    { emit "STEP|$1|ok|$2";    (( PORCELAIN )) || printf '  %s✓%s %s\n' "$c_green" "$c_reset" "$2"; }
 step_skip()  { emit "STEP|$1|skip|$2";  (( PORCELAIN )) || printf '  %s– %s: %s%s\n' "$c_dim" "$1" "$2" "$c_reset"; }
 step_warn()  { emit "STEP|$1|warn|$2";  (( PORCELAIN )) || printf '  %s!%s %s: %s\n' "$c_yellow" "$c_reset" "$1" "$2"; }
-step_fail()  { emit "STEP|$1|fail|$2";  (( PORCELAIN )) || printf '  %s✗%s %s: %s\n' "$c_red" "$c_reset" "$1" "$2"; }
+step_fail()  { emit "STEP|$1|fail|$2";  FAILED_STEPS+=("$1: $2"); (( PORCELAIN )) || printf '  %s✗%s %s: %s\n' "$c_red" "$c_reset" "$1" "$2"; }
 progress()   { emit "PROGRESS|$1|$2|$3"; }
 note()       { emit "LOG|$1";           (( PORCELAIN )) || printf '  %s%s%s\n' "$c_dim" "$1" "$c_reset"; }
 
@@ -568,6 +568,7 @@ push_vault() {
 
 RESTORE_STATE=""
 RESTORE_FAILED=0
+FAILED_STEPS=()
 
 step_done()      { grep -qxF "$1" "$RESTORE_STATE" 2>/dev/null; }
 mark_done()      { printf '%s\n' "$1" >>"$RESTORE_STATE"; }
@@ -609,6 +610,19 @@ restore_packages() {
   if (( DRY_RUN )); then
     printf '%s\n' "${safe_native[@]}" "${safe_foreign[@]}" | sed 's/^/    /'
     return 0
+  fi
+
+  # `pacman -S` reads the local sync databases. A machine that has never run a
+  # refresh has none, which is the normal state of a fresh install -- the exact
+  # case this command exists for.
+  if (( n_count > 0 || f_count > 0 )) &&
+    [[ -z $(find /var/lib/pacman/sync -maxdepth 1 -name '*.db' 2>/dev/null | head -1) ]]; then
+    step_start packages "Refreshing package databases (this machine has never synced)"
+    if sudo pacman -Sy --noconfirm >/dev/null 2>&1; then
+      step_ok packages "databases refreshed"
+    else
+      step_warn packages "could not refresh databases - installs may fail"
+    fi
   fi
 
   if (( n_count > 0 )); then
@@ -679,7 +693,7 @@ restore_omarchy() {
   # pointing it at a theme that is not on disk yet gives you a grey desktop.
   local name url installed=0
   if [[ -f $dir/themes.tsv ]]; then
-    while IFS=$'\t' read -r name url tsha; do
+    while IFS=$'\037' read -r name url tsha; do
       [[ -n $name ]] || continue
       if ! valid_theme "$name"; then
         step_warn omarchy "refused unsafe theme name from this vault"
@@ -704,7 +718,7 @@ restore_omarchy() {
         rsync -a --safe-links -- "$dir/themes/$name/" "$dest/themes/$name/"
         installed=$((installed + 1))
       fi
-    done <"$dir/themes.tsv"
+    done < <(tr '\t' '\037' <"$dir/themes.tsv")
   fi
   (( installed > 0 )) && step_ok omarchy "$installed themes installed"
 
@@ -771,7 +785,10 @@ restore_plugins() {
   step_start plugins "Reinstalling $total plugins"
 
   local id url enabled sha i=0 ok=0
-  while IFS=$'\t' read -r id url enabled sha; do
+  # Tab is IFS whitespace, so `read` treats a\t\tb as two fields, not three, and
+  # an entry with no url silently shifted every later column left. \037 is not
+  # whitespace, so empty fields survive.
+  while IFS=$'\037' read -r id url enabled sha; do
     i=$((i + 1))
     progress plugins "$i" "$total"
     [[ -n $id ]] || continue
@@ -818,7 +835,7 @@ restore_plugins() {
       rm -rf "$target"
       step_warn plugins "could not install $id from $url"
     fi
-  done <"$file"
+  done < <(tr '\t' '\037' <"$file")
   step_ok plugins "$ok of $total plugins in place"
   return 0
 }
@@ -990,8 +1007,14 @@ cmd_restore() {
       step_skip "$category" "already done — pass --restart to redo"
       continue
     fi
+    local failures_before=${#FAILED_STEPS[@]}
     "restore_$category"
-    (( DRY_RUN )) || mark_done "$category"
+    # Only a category that actually succeeded is recorded as done. Marking a
+    # failed one made "rerun to pick up where it stopped" untrue: the rerun
+    # skipped precisely the step that had failed.
+    if (( ! DRY_RUN )) && (( ${#FAILED_STEPS[@]} == failures_before )); then
+      mark_done "$category"
+    fi
   done
 
   if (( ! DRY_RUN )); then
@@ -999,7 +1022,10 @@ cmd_restore() {
     local elapsed=$((SECONDS - started))
     printf '\n'
     if (( RESTORE_FAILED )); then
-      step_warn restore "finished with problems — rerun to pick up where it stopped"
+      printf '%sFinished with problems:%s\n' "$c_yellow" "$c_reset"
+      local failure
+      for failure in "${FAILED_STEPS[@]:-}"; do [[ -n $failure ]] && printf '  x %s\n' "$failure"; done
+      printf 'Rerun the same command to pick up where it stopped.\n'
     else
       printf '%sThis machine is yours again%s — in %s. Log out and back in to pick up\nshell and session changes.\n' \
         "$c_bold" "$c_reset" "$(duration "$elapsed")"
