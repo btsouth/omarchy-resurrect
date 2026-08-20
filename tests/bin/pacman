@@ -1,0 +1,56 @@
+#!/bin/bash
+# Test double: models a package database in $FAKE_STATE. Installs nothing.
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+log_call "pacman $*"
+
+S=$(state)
+
+case "${1:-}" in
+  -Qq)
+    if (( $# == 1 )); then installed_all; exit 0; fi
+    # `pacman -Qq <pkg>` is a membership test.
+    is_installed "$2" && { printf '%s\n' "$2"; exit 0; }
+    exit 1
+    ;;
+  -Qqen) grep -v '^$' "$S/native.txt" 2>/dev/null | sort -u; exit 0 ;;
+  -Qqem) grep -v '^$' "$S/foreign.txt" 2>/dev/null | sort -u; exit 0 ;;
+  -Qqe)  installed_all; exit 0 ;;
+  -Q)
+    [[ -n ${2:-} ]] || { installed_all; exit 0; }
+    is_installed "$2" && { printf '%s 1.0-1\n' "$2"; exit 0; }
+    printf 'error: package "%s" was not found\n' "$2" >&2
+    exit 1
+    ;;
+  -Si)
+    shift
+    for pkg in "$@"; do
+      [[ $pkg == -* ]] && continue
+      grep -qxF "$pkg" "$S/repo-packages.txt" 2>/dev/null || exit 1
+      printf 'Repository      : extra\nName            : %s\nVersion         : 1.0-1\n' "$pkg"
+    done
+    exit 0
+    ;;
+  -Sgq) exit 1 ;;   # no such group here; ress treats that as "nothing to add"
+  -Sy)  exit 0 ;;   # database refresh always succeeds in the sandbox
+  -S)
+    # Install what has been published to the repo; fail on anything else, which
+    # is how a case drives the retry and failure paths.
+    mapfile -t wanted < <(args_after_dashdash "$@")
+    if (( ${#wanted[@]} == 0 )); then
+      for arg in "$@"; do [[ $arg == -* ]] && continue; wanted+=("$arg"); done
+    fi
+    missing=()
+    for pkg in "${wanted[@]}"; do
+      grep -qxF "$pkg" "$S/repo-packages.txt" 2>/dev/null || missing+=("$pkg")
+    done
+    if (( ${#missing[@]} > 0 )); then
+      printf 'error: target not found: %s\n' "${missing[0]}" >&2
+      exit 1
+    fi
+    printf '%s\n' "${wanted[@]}" >>"$S/native.txt"
+    sort -u -o "$S/native.txt" "$S/native.txt"
+    printf 'installed %s\n' "${wanted[*]}"
+    exit 0
+    ;;
+esac
+exit 0

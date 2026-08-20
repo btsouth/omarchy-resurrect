@@ -1,0 +1,5 @@
+#!/bin/bash
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+log_call "omarchy-shell $*"
+[[ -s $(state)/shell-running ]] || exit 1
+exit 0

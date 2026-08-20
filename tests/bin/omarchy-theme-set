@@ -1,0 +1,8 @@
+#!/bin/bash
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+log_call "omarchy-theme-set $*"
+theme="${1:-}"
+[[ -d $HOME/.config/omarchy/themes/$theme ]] || exit 1
+mkdir -p "$HOME/.local/state/omarchy/current"
+printf '%s\n' "$theme" >"$HOME/.local/state/omarchy/current/theme.name"
+exit 0

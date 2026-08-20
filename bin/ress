@@ -9,8 +9,16 @@
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 SCHEMA=1
+
+# The vault's manifest and the suffix restore leaves on anything it replaces.
+# Both were named after the project's old name; both are read under either name
+# forever, because a vault written last year is still a vault.
+VAULT_MANIFEST="ress.json"
+VAULT_MANIFEST_LEGACY="resurrect.json"
+BAK_SUFFIX=".ress-bak"
+BAK_SUFFIX_LEGACY=".resurrect-bak"
 
 # ---------------------------------------------------------------- locations
 
@@ -199,6 +207,16 @@ merged_list() {
 
 git_vault() { git -C "$VAULT" "$@"; }
 
+# Where this vault keeps its manifest. New vaults use ress.json; one written
+# before the rename is read where it lies, and moved on its next backup.
+manifest_path() {
+  [[ -f $VAULT/$VAULT_MANIFEST ]] && { printf '%s' "$VAULT/$VAULT_MANIFEST"; return 0; }
+  [[ -f $VAULT/$VAULT_MANIFEST_LEGACY ]] && { printf '%s' "$VAULT/$VAULT_MANIFEST_LEGACY"; return 0; }
+  printf '%s' "$VAULT/$VAULT_MANIFEST"
+}
+
+has_manifest() { [[ -f $VAULT/$VAULT_MANIFEST || -f $VAULT/$VAULT_MANIFEST_LEGACY ]]; }
+
 ensure_vault_repo() {
   private_dir "$VAULT"
   if [[ ! -d $VAULT/.git ]]; then
@@ -296,9 +314,11 @@ capture_config() {
     [[ -e $HOME/$entry ]] || continue
     while IFS= read -r link; do
       # *.wants/ links are systemd enable-state, captured separately as unit
-      # names; *.resurrect-bak are our own leftovers. Neither is lost, so
-      # neither belongs in a report about things that did not travel.
-      [[ $link == */.wants/* || $link == *.wants/* || $link == *.resurrect-bak ]] && continue
+      # names; *$BAK_SUFFIX are our own leftovers, under either of the two names
+      # ress has used. Neither is lost, so neither belongs in a report about
+      # things that did not travel.
+      [[ $link == */.wants/* || $link == *.wants/* ]] && continue
+      [[ $link == *"$BAK_SUFFIX" || $link == *"$BAK_SUFFIX_LEGACY" ]] && continue
       target=$(readlink -f "$link" 2>/dev/null || true)
       [[ -n $target && $target == "$HOME"/* ]] && continue
       printf '%s -> %s\n' "${link#"$HOME"/}" "${target:-<broken>}" >>"$skipped/symlinks-skipped.txt"
@@ -487,9 +507,18 @@ write_manifest() {
       --argjson uncaptured "${CAPTURED_UNCAPTURED:-0}" \
       --argjson services "${CAPTURED_UNITS:-0}" \
       '$ARGS.named')" \
-    '{schemaVersion: $schema, resurrectVersion: $version, createdAt: $createdAt,
+    '{schemaVersion: $schema, ressVersion: $version, createdAt: $createdAt,
       machine: {hostname: $hostname, user: $user, omarchy: $omarchy, kernel: $kernel},
-      categories: $categories, counts: $counts}' >"$VAULT/resurrect.json"
+      categories: $categories, counts: $counts}' >"$VAULT/$VAULT_MANIFEST"
+
+  # A vault written before the rename carries the old manifest. The new one has
+  # just been written beside it with the same contents under the same schema, so
+  # the old one is removed rather than left to rot as a second answer to "when
+  # was this taken". The vault is a git repo: the move is in its history.
+  if [[ -f $VAULT/$VAULT_MANIFEST_LEGACY ]]; then
+    rm -f "$VAULT/$VAULT_MANIFEST_LEGACY"
+    note "vault manifest renamed to $VAULT_MANIFEST"
+  fi
 }
 
 # ==================================================================== BACKUP
@@ -580,7 +609,7 @@ mark_done()      { printf '%s\n' "$1" >>"$RESTORE_STATE"; }
 # --safe-links drops any symlink in the vault that points outside the tree, so
 # a crafted vault cannot plant `.config/foo -> /etc` and have later writes
 # follow it out of $HOME.
-RSYNC_SAFE=(-a --safe-links --backup --suffix=".resurrect-bak")
+RSYNC_SAFE=(-a --safe-links --backup --suffix="$BAK_SUFFIX")
 
 restore_packages() {
   local dir="$VAULT/packages"
@@ -674,7 +703,7 @@ restore_config() {
     return 0
   fi
   rsync "${RSYNC_SAFE[@]}" -- "$dir/" "$HOME/"
-  step_ok config "$n files restored (replaced files kept as *.resurrect-bak)"
+  step_ok config "$n files restored (replaced files kept as *$BAK_SUFFIX)"
 
   local units="$VAULT/services/user-units.txt"
   if [[ -s $units ]] && have systemctl; then
@@ -745,7 +774,7 @@ restore_omarchy() {
   (( installed > 0 )) && step_ok omarchy "$installed themes installed"
 
   if [[ -f $dir/shell.json ]]; then
-    [[ -f $dest/shell.json ]] && cp -p "$dest/shell.json" "$dest/shell.json.resurrect-bak"
+    [[ -f $dest/shell.json ]] && cp -p "$dest/shell.json" "$dest/shell.json$BAK_SUFFIX"
     cp "$dir/shell.json" "$dest/shell.json"
   fi
   step_ok omarchy "shell layout restored"
@@ -813,14 +842,14 @@ restore_webapps() {
   mkdir -p "$HOME/.local/share/applications" "$HOME/.local/share/icons/hicolor/256x256/apps"
   # Icons first: an icon *name* only resolves to a file that is already on disk,
   # and without one the installer goes to the network for a favicon.
-  [[ -d $dir/icons ]] && rsync -a --safe-links --backup --suffix=".resurrect-bak" -- "$dir/icons/" "$HOME/.local/share/icons/hicolor/256x256/apps/"
+  [[ -d $dir/icons ]] && rsync -a --safe-links --backup --suffix="$BAK_SUFFIX" -- "$dir/icons/" "$HOME/.local/share/icons/hicolor/256x256/apps/"
 
   local row ok=0 target
   for row in "${rows[@]:-}"; do
     [[ -n $row ]] || continue
     IFS=$'\t' read -r name url icon <<<"$row"
     target="$HOME/.local/share/applications/$name.desktop"
-    [[ -f $target ]] && cp -p "$target" "$target.resurrect-bak"
+    [[ -f $target ]] && cp -p "$target" "$target$BAK_SUFFIX"
     if omarchy webapp install "$name" "$url" "${icon:-$url}" >/dev/null 2>&1; then
       ok=$((ok + 1))
     else
@@ -829,7 +858,7 @@ restore_webapps() {
   done
   have gtk-update-icon-cache && gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" &>/dev/null || true
   have update-desktop-database && update-desktop-database "$HOME/.local/share/applications" &>/dev/null || true
-  step_ok webapps "$ok of $n web apps rebuilt (replaced launchers kept as *.resurrect-bak)"
+  step_ok webapps "$ok of $n web apps rebuilt (replaced launchers kept as *$BAK_SUFFIX)"
   return 0
 }
 
@@ -950,7 +979,7 @@ restore_secrets() {
   (( links == 0 )) || step_warn secrets "dropped $links symlink(s) from the archive"
   find "$work/tree" -type l -delete 2>/dev/null || true
 
-  # Landing through rsync gives secrets the same *.resurrect-bak protection
+  # Landing through rsync gives secrets the same *$BAK_SUFFIX protection
   # every other restored file gets; tar would have overwritten silently.
   rsync "${RSYNC_SAFE[@]}" -- "$work/tree/" "$HOME/"
   rm -rf "$work"
@@ -1117,8 +1146,9 @@ cmd_restore() {
     die "missing: ${missing[*]} — run: sudo pacman -S --needed ${missing[*]}"
 
   take_lock
-  [[ -f $VAULT/resurrect.json ]] || die "no vault at $VAULT — pass --from <git-url> or --vault <dir>"
-  local schema; schema=$(jq -r '.schemaVersion // 0' "$VAULT/resurrect.json")
+  has_manifest || die "no vault at $VAULT — pass --from <git-url> or --vault <dir>"
+  local manifest; manifest=$(manifest_path)
+  local schema; schema=$(jq -r '.schemaVersion // 0' "$manifest")
   (( schema == SCHEMA )) || die "vault schema $schema is not readable by ress $VERSION"
 
   private_dir "$STATE_DIR"
@@ -1126,8 +1156,8 @@ cmd_restore() {
   (( restart )) && rm -f "$RESTORE_STATE"
   touch "$RESTORE_STATE"
 
-  local origin; origin=$(plain "$(jq -r '.machine.hostname // "?"' "$VAULT/resurrect.json")")
-  local created; created=$(plain "$(jq -r '.createdAt // "?"' "$VAULT/resurrect.json")")
+  local origin; origin=$(plain "$(jq -r '.machine.hostname // "?"' "$manifest")")
+  local created; created=$(plain "$(jq -r '.createdAt // "?"' "$manifest")")
 
   report_executable_content
 
@@ -1191,7 +1221,7 @@ cmd_status() {
 
   local last=0 commits=0 dirty=0 ahead=0 has_vault=0
   [[ -f $STATE_DIR/last-backup ]] && last=$(<"$STATE_DIR/last-backup")
-  if [[ -f $VAULT/resurrect.json ]]; then
+  if has_manifest; then
     has_vault=1
     commits=$(git_vault rev-list --count HEAD 2>/dev/null || echo 0)
     git_vault diff --quiet 2>/dev/null || dirty=1
@@ -1216,7 +1246,7 @@ cmd_status() {
         --argjson plugins "${CFG[INCLUDE_PLUGINS]}" \
         --argjson secrets "${CFG[INCLUDE_SECRETS]}" \
         '$ARGS.named | map_values(. == 1)')" \
-      --argjson manifest "$( [[ -f $VAULT/resurrect.json ]] && cat "$VAULT/resurrect.json" || echo null )" \
+      --argjson manifest "$( has_manifest && cat "$(manifest_path)" || echo null )" \
       '$ARGS.named'
     return 0
   fi
@@ -1233,7 +1263,7 @@ cmd_status() {
       "  captured   " + n(.counts.packages; "package") + ", " + n(.counts.config; "config path")
       + ", " + n(.counts.themes; "theme") + ", " + n(.counts.webapps; "web app")
       + ", " + n(.counts.plugins; "plugin")' \
-      "$VAULT/resurrect.json"
+      "$(manifest_path)"
   else
     printf '  %sno backup yet — run: ress backup%s\n' "$c_dim" "$c_reset"
   fi

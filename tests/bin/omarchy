@@ -1,0 +1,34 @@
+#!/bin/bash
+# Test double: the parts of the omarchy CLI that ress calls.
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+log_call "omarchy $*"
+
+case "${1:-} ${2:-}" in
+  "plugin validate")
+    [[ -f ${3:-}/manifest.json ]] || { echo "missing manifest.json" >&2; exit 1; }
+    exit 0
+    ;;
+  "plugin enable")  exit 0 ;;
+  "plugin remove")  exit 0 ;;
+  "webapp install")
+    name="${3:-}"; url="${4:-}"; icon="${5:-}"
+    [[ -n $name && -n $url ]] || exit 1
+    mkdir -p "$HOME/.local/share/applications"
+    cat >"$HOME/.local/share/applications/$name.desktop" <<DESKTOP
+[Desktop Entry]
+Name=$name
+Exec=omarchy-launch-webapp $url
+Icon=$icon
+Type=Application
+DESKTOP
+    exit 0
+    ;;
+  "theme set")
+    theme="${3:-}"
+    [[ -d $HOME/.config/omarchy/themes/$theme || -d /usr/share/omarchy/themes/$theme ]] || exit 1
+    mkdir -p "$HOME/.local/state/omarchy/current"
+    printf '%s\n' "$theme" >"$HOME/.local/state/omarchy/current/theme.name"
+    exit 0
+    ;;
+esac
+exit 0

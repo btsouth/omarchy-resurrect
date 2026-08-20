@@ -1,0 +1,51 @@
+#!/bin/bash
+# Test double: models `systemctl --user` enable-state in $FAKE_STATE.
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+log_call "systemctl $*"
+
+S=$(state)
+units="$S/enabled-units.txt"
+
+[[ ${1:-} == "--user" ]] && shift
+action="${1:-}"; shift || true
+# Drop option words so `enable -- foo.service` and `enable foo.service` agree.
+rest=()
+for arg in "$@"; do [[ $arg == "--" || $arg == -* ]] && continue; rest+=("$arg"); done
+
+case "$action" in
+  list-unit-files)
+    while IFS= read -r u; do [[ -n $u ]] && printf '%s enabled enabled\n' "$u"; done <"$units"
+    exit 0
+    ;;
+  is-enabled)
+    grep -qxF "${rest[0]:-}" "$units" 2>/dev/null && { echo enabled; exit 0; }
+    echo disabled; exit 1
+    ;;
+  enable)
+    for u in "${rest[@]}"; do
+      [[ -f $HOME/.config/systemd/user/$u ]] || { printf 'Unit %s does not exist.\n' "$u" >&2; exit 1; }
+      printf '%s\n' "$u" >>"$units"
+    done
+    sort -u -o "$units" "$units"
+    exit 0
+    ;;
+  cat)
+    for u in "${rest[@]}"; do
+      [[ -f $HOME/.config/systemd/user/$u ]] || exit 1
+      printf '# %s/.config/systemd/user/%s\n' "$HOME" "$u"
+      cat "$HOME/.config/systemd/user/$u"
+    done
+    exit 0
+    ;;
+  show)
+    # `show -p ExecStart --value <unit>`
+    prop=""
+    for ((i=1; i<=$#; i++)); do [[ ${!i} == "-p" ]] && { j=$((i+1)); prop="${!j}"; }; done
+    u="${rest[-1]:-}"
+    file="$HOME/.config/systemd/user/$u"
+    [[ -f $file ]] || exit 1
+    [[ $prop == ExecStart ]] && sed -n 's/^ExecStart=//p' "$file" | head -1
+    exit 0
+    ;;
+esac
+exit 0

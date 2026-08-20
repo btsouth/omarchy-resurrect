@@ -1,0 +1,9 @@
+#!/bin/bash
+# Test double: records the call and runs the rest of the line as the current
+# user. It has no privileges and grants none — it exists so a case can assert
+# on what would have been run as root.
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+log_call "sudo $*"
+while [[ ${1:-} == -* ]]; do shift; done
+[[ $# -gt 0 ]] || exit 0
+exec "$@"

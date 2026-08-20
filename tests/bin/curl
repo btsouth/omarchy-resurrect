@@ -1,0 +1,31 @@
+#!/bin/bash
+# Test double: answers the AUR RPC and nothing else. Any other URL is a
+# deliberate failure, so a case can prove ress never reaches the network for
+# anything it has not been taught to reach for.
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+log_call "curl $*"
+
+S=$(state)
+url=""
+for arg in "$@"; do [[ $arg == http* ]] && url="$arg"; done
+
+if [[ -f $S/aur-rpc-offline ]]; then
+  echo "curl: (28) Operation timed out" >&2
+  exit 28
+fi
+
+if [[ $url == *aur.archlinux.org/rpc* ]]; then
+  # Reflect back only the names that this fake AUR knows about.
+  results=""
+  while IFS= read -r name; do
+    [[ -n $name ]] || continue
+    [[ $url == *"arg[]=$name"* || $url == *"arg%5B%5D=$name"* ]] || continue
+    results+="{\"Name\":\"$name\",\"Version\":\"1.0-1\",\"NumVotes\":10,\"OutOfDate\":null,\"Maintainer\":\"someone\"},"
+  done <"$S/aur-rpc.txt"
+  printf '{"resultcount":%d,"results":[%s],"type":"multiinfo","version":5}\n' \
+    "$(printf '%s' "$results" | grep -o '{' | wc -l)" "${results%,}"
+  exit 0
+fi
+
+echo "curl: (6) Could not resolve host" >&2
+exit 6

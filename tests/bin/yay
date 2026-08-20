@@ -1,0 +1,37 @@
+#!/bin/bash
+# Test double: models an AUR helper. Builds nothing; records that it was asked.
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+log_call "yay $*"
+
+S=$(state)
+
+case "${1:-}" in
+  -Si)
+    shift
+    for pkg in "$@"; do
+      [[ $pkg == -* ]] && continue
+      grep -qxF "$pkg" "$S/aur-packages.txt" 2>/dev/null || exit 1
+      printf 'Repository      : aur\nName            : %s\n' "$pkg"
+    done
+    exit 0
+    ;;
+  -S)
+    mapfile -t wanted < <(args_after_dashdash "$@")
+    if (( ${#wanted[@]} == 0 )); then
+      for arg in "$@"; do [[ $arg == -* ]] && continue; wanted+=("$arg"); done
+    fi
+    missing=()
+    for pkg in "${wanted[@]}"; do
+      grep -qxF "$pkg" "$S/aur-packages.txt" 2>/dev/null || missing+=("$pkg")
+    done
+    if (( ${#missing[@]} > 0 )); then
+      printf '=> could not find all required packages: %s\n' "${missing[0]}" >&2
+      exit 1
+    fi
+    printf '%s\n' "${wanted[@]}" >>"$S/foreign.txt"
+    sort -u -o "$S/foreign.txt" "$S/foreign.txt"
+    printf 'built %s\n' "${wanted[*]}"
+    exit 0
+    ;;
+esac
+exit 0

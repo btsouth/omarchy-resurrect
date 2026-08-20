@@ -1,0 +1,40 @@
+#!/bin/bash
+# Test double: real git, with one rewrite.
+#
+# Cases publish fake upstreams at $FAKE_STATE/remotes/<name> and reference them
+# as https://github.com/example/<name>. Only the verbs that actually talk to a
+# remote get the rewrite, injected as `-c url.<local>.insteadOf=<https>`, so
+# `git remote get-url` still reports the https URL the vault should record.
+# Rewriting globally would have capture record a /tmp path and restore then
+# refuse it as an unsafe remote — an artefact of the test, not of ress.
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+real=""
+IFS=: read -r -a parts <<<"$PATH"
+for dir in "${parts[@]}"; do
+  [[ $dir == "$(dirname "${BASH_SOURCE[0]}")" ]] && continue
+  [[ -x $dir/git ]] && { real="$dir/git"; break; }
+done
+[[ -n $real ]] || { echo "test double: no real git on PATH" >&2; exit 127; }
+
+# The first argument that is not a global option (or its value) is the verb.
+verb=""
+skip=0
+for arg in "$@"; do
+  if (( skip )); then skip=0; continue; fi
+  case "$arg" in
+    -C|-c|--git-dir|--work-tree|--namespace|--exec-path) skip=1; continue ;;
+    -*) continue ;;
+    *) verb="$arg"; break ;;
+  esac
+done
+
+inject=()
+case "$verb" in
+  clone|fetch|pull|push|ls-remote)
+    log_call "git $*"
+    inject=(-c "url.$(state)/remotes/.insteadOf=https://github.com/example/")
+    ;;
+esac
+
+exec "$real" "${inject[@]}" "$@"

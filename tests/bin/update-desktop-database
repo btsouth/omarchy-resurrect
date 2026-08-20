@@ -1,0 +1,4 @@
+#!/bin/bash
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+log_call "update-desktop-database $*"
+exit 0
