@@ -1,81 +1,117 @@
-# Running the fresh-machine demo
+# Running the fresh-machine test
 
-`ress diff --stock` already gives a measured, defensible number without any of
-this. Run the full thing only when you want the recording: an actual fresh
-Omarchy becoming your machine, start to finish, on the clock.
+`ress diff --stock` already gives a measured number without any of this. Do the
+full run when you want proof, and the recording: an actual fresh Omarchy
+becoming your machine, on the clock.
 
-## Doing it without losing work
+## 1. Decide how the vault reaches the new machine
 
-Everything Resurrect is lives in this git repo and is pushed to GitHub. Reverting
-a VM cannot lose the project — at worst it ends a running terminal session. Pick
-whichever of these fits your setup:
+The new machine has to be able to read your vault. Two ways, and for a test the
+first is much less work.
 
-**A — Clone the VM (safest; your working VM is never touched).**
-In VMware: power off, then *VM ▸ Manage ▸ Clone*, base it on a clean Omarchy
-snapshot, and choose a **linked clone** (fast, small on disk). Boot the clone,
-run the demo there, delete it afterwards. Your working VM never changes state,
-so nothing running inside it is interrupted.
-
-**B — Snapshot forward, then back (simplest; costs you the session).**
-1. Snapshot the current VM and name it `work`. This captures everything as it is.
-2. Revert to your clean Omarchy snapshot.
-3. Run the demo below.
-4. Revert to `work`. Everything returns, including this repo.
-
-The only thing lost is the terminal session that was open, not the work.
-
-**C — A second VM from the Omarchy ISO.**
-Slowest, and the most honest: it includes the Omarchy install itself, so the
-number is genuinely bare-metal-to-desktop. Worth it if you want the full story
-in one take.
-
-Option A is the one to reach for. Option B is fine and needs no disk.
-
-## Before you start
-
-Push a vault somewhere the fresh machine can reach:
+**A — copy the folder (simplest).** The vault is self-contained at
+`~/.local/share/ress/vault`. Drop it on a VMware shared folder, a USB image, or
+`scp` it over. No remote, no repo, no auth.
 
 ```bash
-ress init --remote git@github.com:you/my-omarchy-vault.git   # private repo is fine
+ress backup                                    # make sure it is current
+cp -a ~/.local/share/ress/vault /path/to/shared/ress-vault
+```
+
+**B — a private git repo (what you'd really use).** Also proves the clone path.
+
+```bash
+gh auth setup-git                              # lets git push over https
+gh repo create tsouth89/omarchy-vault --private
+ress set REMOTE=https://github.com/tsouth89/omarchy-vault.git
 ress backup --push
 ```
 
-Use an **HTTPS** URL if the fresh machine will not have your SSH key — which,
-if you are testing honestly, it will not.
+Keep it **private**: the vault holds your dotfiles. Credentials are excluded
+from every capture — keys, tokens, `hosts.yml`, `.netrc`, `known_hosts` — but
+your Hyprland, Neovim and shell config are in there, and that is yours.
 
-## On the fresh machine
+On the new machine a private repo needs credentials before it can be cloned, so
+either run `gh auth login` there first, or use method A for the test.
 
-From a TTY, before you have touched anything:
+## 2. Get a fresh machine without losing work
 
-```bash
-time bash -c '
-  omarchy plugin add https://github.com/tsouth89/omarchy-resurrect --yes &&
-  ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress restore --from https://github.com/you/my-omarchy-vault --yes
-'
-```
+Everything here lives in git and is pushed, so reverting a VM cannot lose the
+project — at worst it ends a running terminal session.
 
-Resurrect prints its own elapsed time at the end; `time` brackets the whole
-thing including installing the plugin and cloning the vault.
+**Linked clone (safest).** VMware: power off, *VM ▸ Manage ▸ Clone*, base it on
+a clean Omarchy snapshot, choose **linked clone** — fast, small on disk. Boot the
+clone, test there, delete it. Your working VM is never touched, so nothing
+running inside it is interrupted.
 
-If the AUR is slow or something times out, run it again — the restore is
-resumable and picks up at the step it stopped on.
+**Snapshot forward and back.** Snapshot the current VM as `work`, revert to a
+clean Omarchy snapshot, test, then revert to `work`. Costs no disk; costs you the
+open session.
 
-## What to capture
+**A second VM from the ISO.** Slowest and most honest, because it includes the
+Omarchy install itself — the true bare-metal-to-desktop number.
 
-- The **whole run** as one take, including the failures if there are any. A
-  demo that shows a retry working is more convincing than one that never stumbles.
-- The final line, which reads `This machine is yours again — in Nm Ns.`
-- A shot of the desktop afterwards: same theme, same bar layout, same web apps.
+## 3. Run it
 
-Then put the real number in the README's cost table, replacing the estimate.
-
-## Recording
-
-There is no recorder installed by default. Either:
+On the fresh machine, from a terminal. Two commands, no pipe into a shell:
 
 ```bash
-sudo pacman -S wf-recorder    # then: wf-recorder -f demo.mp4
+omarchy plugin add https://github.com/tsouth89/omarchy-resurrect --yes
+
+time ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress restore \
+  --vault /path/to/shared/ress-vault --yes
 ```
 
-or record the VM window from the host, which also captures the boot and avoids
-putting a recorder inside the machine you are trying to show as fresh.
+With a git remote instead, swap the second line for:
+
+```bash
+time ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress restore \
+  --from https://github.com/tsouth89/omarchy-vault --yes
+```
+
+It will ask for your password once, for `pacman`. Resurrect prints its own
+elapsed time at the end; `time` brackets everything including the download.
+
+If the AUR is slow or something times out, **run it again** — the restore is
+resumable and picks up at the step it stopped on. A rerun that completes is a
+better demo than a run that never stumbles.
+
+## 4. Check it actually worked
+
+```bash
+ress status                       # counts should match the source machine
+ress diff --stock                 # should now report 0 packages to fetch
+pacman -Qq | wc -l                # package count in the same range
+ls ~/.local/share/applications/   # your web apps
+omarchy theme list                # your themes
+```
+
+Then look at the desktop: same theme, same bar layout, same wallpaper, your web
+apps in the launcher. Log out and back in to pick up shell and session changes.
+
+Worth opening one config you actually customised — `~/.config/hypr/bindings.lua`
+or your Neovim setup — and confirming it is yours and not a default.
+
+## 5. What to record
+
+- The **whole run** as one take, failures included.
+- The final line: `This machine is yours again — in Nm Ns.`
+- The desktop afterwards.
+
+Put the real number in the README's cost table, replacing the estimate.
+
+No recorder ships by default. Either `sudo pacman -S wf-recorder` inside the VM,
+or record the VM window from the host — which also captures the boot and keeps a
+recorder out of the machine you are presenting as fresh.
+
+## Known-untested paths
+
+These have not been exercised end to end, so watch them during the run:
+
+| Path | Why it is untested |
+|---|---|
+| `pacman` install with root | Only the resolution was verified, never the privileged write |
+| AUR restore via `yay` | Nothing foreign was missing on the source machine |
+| Theme restore by git clone | The source machine had no git-installed themes |
+| Plugin restore | Only the already-present branch was taken |
+| Encrypted secrets | `age` is not installed on the source machine |
