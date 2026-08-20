@@ -122,3 +122,27 @@ printf -- '--now\n../../etc/evil.service\n' >>"$VAULT/services/user-units.txt"
 ress --vault "$VAULT" enable-units --all
 assert_not_called "enable -- --now" "an option-shaped name never reaches systemctl"
 assert_not_called "evil.service" "a traversing name never reaches systemctl"
+
+# ---- 11. end of input at the prompt is an answer, not a death ------------
+
+# confirm() is always called in a condition, which suspends set -e. This prompt
+# is a plain command, so a `read` returning 1 at EOF used to take the whole
+# restore with it — mid-way, with nothing printed and later categories skipped.
+: >"$FAKE_STATE/enabled-units.txt"; : >"$CALLS"
+printf 'somepkg\n' >"$VAULT/packages/native.txt"
+machine_publish repo somepkg
+
+ress_tty --vault "$VAULT" restore --yes --restart
+assert_ok "Ctrl-D at the units prompt does not kill the restore"
+assert_output "This machine is yours again" "the restore still finishes"
+assert_not_called "systemctl --user enable" "and end-of-input counts as no"
+assert_called "pacman -S --needed --noconfirm -- somepkg" "later categories still run"
+
+# ---- 12. naming a unit that is not pending is not "all done" -------------
+
+machine_enable_unit syncthing.service phone-home.service
+ress --vault "$VAULT" enable-units --all nosuch.service
+assert_fails "naming an unknown unit is not a success"
+assert_output "is not a service this vault has enabled"
+assert_no_output "Every user service in this vault is already enabled here" \
+  "and does not claim everything is enabled"

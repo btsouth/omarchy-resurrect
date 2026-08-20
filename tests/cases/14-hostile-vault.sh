@@ -94,3 +94,43 @@ assert_ok "backup with a hostile filename"
 assert_output "Possible credentials in the vault"
 BAD=$(printf '%s' "$OUT" | grep -c "$(printf '\033')\[31m" || true)
 assert_equals "$BAD" "0" "the finding list carries no escape sequence from the filename"
+
+# ---- a schema version that is not a number -------------------------------
+
+# `(( schema == SCHEMA ))` is not a numeric context: bash arithmetic evaluates
+# the contents of a bare name and runs command substitution inside an array
+# subscript. A vault declaring `CFG[$(...)]` as its schemaVersion ran that
+# command — on the --from path, before any prompt.
+EVIL=$(make_vault "$SANDBOX/evil-schema")
+jq -n --arg s "CFG[\$(touch $SANDBOX/EXECUTED)]" \
+  '{schemaVersion: $s, ressVersion: "1.1.0", createdAt: "x",
+    machine: {hostname: "h", user: "u", omarchy: "4", kernel: "6"},
+    categories: [], counts: {}}' >"$EVIL/ress.json"
+git -C "$EVIL" add -A
+git -C "$EVIL" -c commit.gpgsign=false commit -q -m evil
+
+ress --vault "$EVIL" restore --dry-run
+assert_fails "a vault with a non-numeric schema is refused"
+assert_output "not declare a schema version as a number"
+assert_no_file "$SANDBOX/EXECUTED" "and nothing it wrote there was executed"
+
+ress --vault "$EVIL" restore --yes
+assert_fails "the same on a real restore"
+assert_no_file "$SANDBOX/EXECUTED"
+
+# The same field in a loadout, which `ress apply` reads before its confirmation.
+PROFILE="$SANDBOX/evil-loadout"
+mkdir -p "$PROFILE"
+jq -n --arg s "CFG[\$(touch $SANDBOX/EXECUTED2)]" \
+  '{schemaVersion: $s, kind: "omarchy-loadout", name: "x", author: "y",
+    packages: {native: [], aur: []}, plugins: [], webapps: [],
+    theme: {name: "", url: "", commit: ""}}' >"$PROFILE/profile.json"
+ress apply --dry-run "$PROFILE"
+assert_fails "a loadout with a non-numeric schema is refused"
+assert_no_file "$SANDBOX/EXECUTED2" "and nothing it wrote there was executed"
+
+# A real numeric schema from the future is still refused, but politely.
+jq '.schemaVersion = 99' "$EVIL/ress.json" >"$EVIL/x" && mv "$EVIL/x" "$EVIL/ress.json"
+ress --vault "$EVIL" restore --yes
+assert_fails "a schema from the future is refused"
+assert_output "vault schema 99 is not readable"

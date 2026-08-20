@@ -140,3 +140,21 @@ assert_output "no such category: pakcages"
 # The real names still work, including several at once.
 ress --vault "$A" restore --yes --restart --only packages,config
 assert_ok "a valid --only list is accepted"
+
+# ---- 7. a backup with no file categories does not invent findings --------
+
+# secret_scan's success means "found something". Two early exits returned 0,
+# so a backup with nothing to scan reported "possible credentials in 0 files" —
+# and under SECRET_SCAN=block refused to commit anything, ever again.
+ress init >/dev/null
+ress set INCLUDE_CONFIG=0 INCLUDE_OMARCHY=0 >/dev/null
+ress backup -m "packages only"
+assert_ok "a backup with no file categories succeeds"
+assert_no_output "Possible credentials" "and finds nothing, because there was nothing to look at"
+assert_no_output "0 files"
+
+ress set SECRET_SCAN=block >/dev/null
+ress backup -m "packages only, blocking"
+assert_ok "and block does not stop it either"
+assert_no_output "Nothing was committed"
+ress set SECRET_SCAN=warn INCLUDE_CONFIG=1 INCLUDE_OMARCHY=1 >/dev/null

@@ -86,8 +86,8 @@ die() {
 confirm() {
   (( ASSUME_YES )) && return 0
   [[ -t 0 ]] || die "refusing to continue without confirmation; pass --yes"
-  local reply
-  read -r -p "$1 [y/N] " reply
+  local reply=""
+  read -r -p "$1 [y/N] " reply || reply=""
   [[ $reply == [yY]* ]]
 }
 
@@ -379,6 +379,10 @@ capture_config() {
   CAPTURED_CONFIG=$present
   CAPTURED_UNCAPTURED=$unknown
   step_ok config "$present paths captured, ${CAPTURED_UNITS:-0} user services enabled"
+  # An entry on the capture list that does not exist here was being counted and
+  # then thrown away, which is the one thing the surrounding comment says this
+  # function does not do.
+  (( missing > 0 )) && note "on the capture list but not on this machine: $missing"
   (( unknown > 0 )) && note "$unknown config directories were not on the list (see report/not-captured.txt)"
   return 0
 }
@@ -585,10 +589,14 @@ looks_like_placeholder() {
 SECRET_FINDINGS=""
 secret_scan() {
   SECRET_FINDINGS=""
+  # Success means "findings exist" — every caller reads it that way — so having
+  # nothing to look at is a failure to find, not a success. Returning 0 here had
+  # a backup with no dotfile categories report "possible credentials in 0 files",
+  # and under SECRET_SCAN=block refuse to commit anything, ever again.
   local roots=() root
   for root in "$@"; do [[ -d $root ]] && roots+=("$root"); done
-  (( ${#roots[@]} > 0 )) || return 0
-  have grep || return 0
+  (( ${#roots[@]} > 0 )) || return 1
+  have grep || return 1
 
   # Every rule joined into one pattern for a single walk of the tree, because
   # seventeen walks of a home directory is seventeen walks of a home directory.
@@ -959,8 +967,8 @@ aur_gate() {
     "$c_dim" "$c_reset"
   printf '  %s[y]%s build them   %s[r]%s review each PKGBUILD first   %s[N]%s skip\n' \
     "$c_green" "$c_reset" "$c_blue" "$c_reset" "$c_dim" "$c_reset"
-  local reply
-  read -r -p "  > " reply
+  local reply=""
+  read -r -p "  > " reply || reply=""
   case "$reply" in
     [yY]*) AUR_MODE="build" ;;
     [rR]*) AUR_MODE="review" ;;
@@ -1230,8 +1238,8 @@ restore_user_units() {
     "$c_bold" "$(plural "${#units[@]}" "user service")" "$c_reset"
   list_units "${units[@]}"
   printf '\n%sEnabling them starts them with your session from now on.%s\n' "$c_dim" "$c_reset"
-  local reply
-  read -r -p "Enable $(plural "${#units[@]}" "user service")? [y/N] " reply
+  local reply=""
+  read -r -p "Enable $(plural "${#units[@]}" "user service")? [y/N] " reply || reply=""
   if [[ $reply == [yY]* ]]; then
     enable_units "${units[@]}"
     step_ok units "$(plural "$ENABLED_UNITS" "user service") enabled"
@@ -1396,8 +1404,8 @@ restore_omarchy() {
   if [[ -f $dir/shell.json ]]; then
     [[ -f $dest/shell.json ]] && cp -p "$dest/shell.json" "$dest/shell.json$BAK_SUFFIX"
     cp "$dir/shell.json" "$dest/shell.json"
+    step_ok omarchy "shell layout restored"
   fi
-  step_ok omarchy "shell layout restored"
 
   if [[ -f $dir/theme.name ]] && have omarchy-theme-set; then
     local theme; theme=$(<"$dir/theme.name")
@@ -1792,13 +1800,17 @@ cmd_restore() {
   # A category name that is not a category selects nothing, and a restore that
   # selects nothing used to finish with "this machine is yours again" having
   # done exactly nothing. A typo is not a selection.
+  # Split on commas without letting the shell expand `*` against $PWD, which
+  # made `--only '*'` complain about whatever file it happened to find.
   local requested name known
+  set -f
   for requested in ${only//,/ } ${skip//,/ }; do
     [[ -n $requested ]] || continue
     known=0
     for name in "${CATEGORIES[@]}"; do [[ $name == "$requested" ]] && known=1; done
-    (( known )) || die "no such category: $requested (choose from: ${CATEGORIES[*]})"
+    (( known )) || { set +f; die "no such category: $(plain "$requested") (choose from: ${CATEGORIES[*]})"; }
   done
+  set +f
 
   resolve_vault
   if [[ -n $from ]]; then
@@ -1863,7 +1875,10 @@ cmd_restore() {
   has_manifest || die "no vault at $VAULT — pass --from <git-url> or --vault <dir>"
   local manifest; manifest=$(manifest_path)
   local schema; schema=$(jq -r '.schemaVersion // 0' "$manifest")
-  (( schema == SCHEMA )) || die "vault schema $schema is not readable by ress $VERSION"
+  valid_int "$schema" ||
+    die "this vault does not declare a schema version as a number — refusing to read it"
+  (( schema == SCHEMA )) ||
+    die "vault schema $(plain "$schema") is not readable by ress $VERSION"
 
   private_dir "$STATE_DIR"
   RESTORE_STATE="$STATE_DIR/restore.state"
@@ -2413,20 +2428,35 @@ cmd_enable_units() {
   local units=() unit
   while IFS= read -r unit; do [[ -n $unit ]] && units+=("$unit"); done < <(pending_units)
 
-  # Named units are still checked against the vault: this command turns on what
-  # a backup recorded, not any unit on the machine.
+  # Nothing pending at all is a different answer from "none of the ones you
+  # named are pending", and saying the first when the second is true told you
+  # the machine was in a state it was not in — with exit 0, so a script could
+  # not tell either.
+  local pending_total=${#units[@]}
+  local unmatched=0
   if (( ${#wanted[@]} > 0 )); then
     local chosen=() name found
     for name in "${wanted[@]}"; do
       found=0
       for unit in "${units[@]:-}"; do [[ $unit == "$name" ]] && { chosen+=("$name"); found=1; break; }; done
-      (( found )) || printf '%s%s is not a service this vault has enabled, or it is already enabled here.%s\n' \
-        "$c_yellow" "$(plain "$name")" "$c_reset" >&2
+      if (( ! found )); then
+        unmatched=$((unmatched + 1))
+        printf '%s%s is not a service this vault has enabled, or it is already enabled here.%s\n' \
+          "$c_yellow" "$(plain "$name")" "$c_reset" >&2
+      fi
     done
-    units=("${chosen[@]:-}")
+    units=()
+    (( ${#chosen[@]} > 0 )) && units=("${chosen[@]}")
   fi
 
-  if (( ${#units[@]} == 0 )) || [[ -z ${units[0]:-} ]]; then
+  if (( ${#units[@]} == 0 )); then
+    if (( unmatched > 0 )); then
+      # The vault does have work outstanding; you just did not name any of it.
+      (( pending_total > 0 )) &&
+        printf '%s%s in this vault, still not enabled here. Run without a name to see them.%s\n' \
+          "$c_dim" "$(plural "$pending_total" "user service")" "$c_reset"
+      return 1
+    fi
     printf '%sEvery user service in this vault is already enabled here.%s\n' "$c_green" "$c_reset"
     return 0
   fi
@@ -2661,6 +2691,13 @@ valid_sha()   { [[ $1 =~ ^[0-9a-f]{40}$ ]]; }
 valid_label() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9\ ._+\&-]{0,63}$ ]]; }
 valid_https() { [[ $1 =~ ^https://[A-Za-z0-9._~:/?\#@!\$\&\(\)*+,\;=%-]{3,512}$ ]]; }
 valid_unit()  { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9@._-]{0,127}\.(service|socket|timer|target|path|slice)$ ]]; }
+# A schema version is compared with (( )), and bash arithmetic is not a numeric
+# context — it evaluates the *contents* of a bare name, recursively, and performs
+# command substitution inside an array subscript. A vault saying its
+# schemaVersion is `CFG[$(...)]` therefore ran that command, before any prompt,
+# on the `restore --from` path that fetches a stranger's vault. Nothing reaches
+# arithmetic now without matching this first.
+valid_int()   { [[ $1 =~ ^[0-9]{1,9}$ ]]; }
 
 # Your own plugins and themes may legitimately be cloned over SSH, so restoring
 # your own vault accepts the ssh forms too — but never `file://`, never a bare
@@ -2931,8 +2968,12 @@ fetch_profile() {
   local schema kind
   schema=$(jq -r '.schemaVersion // 0' "$dest/profile.json")
   kind=$(jq -r '.kind // ""' "$dest/profile.json")
-  [[ $kind == "omarchy-loadout" ]] || die "not an Omarchy loadout (kind: ${kind:-missing})"
-  (( schema == PROFILE_SCHEMA )) || die "loadout schema $schema is not readable by ress $VERSION"
+  [[ $kind == "omarchy-loadout" ]] ||
+    die "not an Omarchy loadout (kind: $(plain "${kind:-missing}"))"
+  valid_int "$schema" ||
+    die "this loadout does not declare a schema version as a number — refusing to read it"
+  (( schema == PROFILE_SCHEMA )) ||
+    die "loadout schema $(plain "$schema") is not readable by ress $VERSION"
 }
 
 cmd_apply() {

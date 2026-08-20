@@ -120,3 +120,11 @@ machine_publish repo ttf-fancy
 ress_answer "n" -- --vault "$VAULT" restore --yes --restart --only packages
 assert_output "now in the official repos" "a package that moved into the repos is called out"
 assert_not_called "yay -S" "and still nothing is built without a yes"
+
+# ---- 11. end of input at the AUR prompt -----------------------------------
+
+: >"$FAKE_STATE/foreign.txt"; : >"$CALLS"
+ress_tty --vault "$VAULT" restore --yes --restart --only packages
+assert_ok "Ctrl-D at the AUR prompt does not kill the restore"
+assert_not_called "yay -S" "and counts as no"
+assert_output "Left for later" "with the work recorded as deferred"
