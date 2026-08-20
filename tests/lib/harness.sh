@@ -54,6 +54,13 @@ harness_setup() {
   git config --file "$GIT_CONFIG_GLOBAL" init.defaultBranch main
   git config --file "$GIT_CONFIG_GLOBAL" commit.gpgsign false
 
+  # A sandbox Omarchy: ress reads $OMARCHY_PATH for the version file, the stock
+  # package lists and the built-in themes. Without this, a case would pass or
+  # fail depending on which themes the developer's machine has installed.
+  export OMARCHY_PATH="$SANDBOX/omarchy"
+  mkdir -p "$OMARCHY_PATH/themes" "$OMARCHY_PATH/install"
+  printf '4.0.0-test\n' >"$OMARCHY_PATH/version"
+
   # Colour off, so assertions match plain text.
   export TERM=dumb
 
@@ -93,6 +100,15 @@ machine_publish() {
 machine_enable_unit() {
   printf '%s\n' "$@" >>"$FAKE_STATE/enabled-units.txt"
   sort -u -o "$FAKE_STATE/enabled-units.txt" "$FAKE_STATE/enabled-units.txt"
+}
+
+# A theme that ships with Omarchy rather than living in the user's config.
+machine_builtin_theme() {
+  local name
+  for name in "$@"; do
+    mkdir -p "$OMARCHY_PATH/themes/$name"
+    printf 'background = "#000000"\n' >"$OMARCHY_PATH/themes/$name/theme.conf"
+  done
 }
 
 machine_shell_running() { printf 'yes' >"$FAKE_STATE/shell-running"; }

@@ -37,6 +37,12 @@ SELF_DIR=$(self_dir)
 PLUGIN_DIR=$(dirname "$SELF_DIR")
 DEFAULTS_DIR="$PLUGIN_DIR/defaults"
 
+# Omarchy exports OMARCHY_PATH for exactly this, and the shell's own plugin
+# catalog reads it rather than the fixed path. Following it means a checkout
+# running under `omarchy dev link` sees its own themes and version, instead of
+# the ones installed system-wide.
+OMARCHY_DIR="${OMARCHY_PATH:-/usr/share/omarchy}"
+
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ress"
 CONFIG_FILE="$CONFIG_DIR/config"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ress"
@@ -111,6 +117,10 @@ declare -A CFG=(
   # warn | block | off. What to do when a capture looks like it picked up a
   # credential.
   [SECRET_SCAN]="warn"
+  # Every file in ~/.config/autostart is a command that runs at your next
+  # login, which is why it is not captured by default. Turning this on is a
+  # decision, so it is a setting rather than a line in a list.
+  [CAPTURE_AUTOSTART]="0"
 )
 
 load_config() {
@@ -138,7 +148,7 @@ save_config() {
     for key in VAULT REMOTE AUTO_BACKUP AUTO_INTERVAL_HOURS AUTO_PUSH \
       INCLUDE_PACKAGES INCLUDE_CONFIG INCLUDE_OMARCHY INCLUDE_WEBAPPS \
       INCLUDE_PLUGINS INCLUDE_SECRETS SECRETS_MODE SECRETS_RECIPIENT PROFILE_URL \
-      ENABLE_UNITS AUR SECRET_SCAN; do
+      ENABLE_UNITS AUR SECRET_SCAN CAPTURE_AUTOSTART; do
       printf '%s=%s\n' "$key" "${CFG[$key]}"
     done
   } >"$tmp"
@@ -288,6 +298,14 @@ capture_config() {
 
   local entries=() entry present=0 missing=0
   while IFS= read -r entry; do entries+=("$entry"); done < <(merged_list include)
+  # Opt-in, and never silently: every entry under it is a command that runs at
+  # the next login, on whatever machine this vault is replayed onto.
+  if [[ ${CFG[CAPTURE_AUTOSTART]:-0} == 1 ]] && [[ -d $HOME/.config/autostart ]]; then
+    entries+=(".config/autostart")
+    local n_autostart; n_autostart=$(find "$HOME/.config/autostart" -type f -name '*.desktop' 2>/dev/null | wc -l)
+    (( n_autostart > 0 )) &&
+      step_warn config "capturing $(plural "$n_autostart" "autostart entry") — each one runs at login wherever this vault is restored"
+  fi
 
   local total=${#entries[@]} i=0
   for entry in "${entries[@]}"; do
@@ -625,7 +643,7 @@ report_secret_findings() {
 
 write_manifest() {
   local omarchy_version="unknown"
-  [[ -f /usr/share/omarchy/version ]] && omarchy_version=$(</usr/share/omarchy/version)
+  [[ -f $OMARCHY_DIR/version ]] && omarchy_version=$(<"$OMARCHY_DIR/version")
 
   jq -n \
     --argjson schema "$SCHEMA" \
@@ -2017,6 +2035,205 @@ LIST
   esac
 }
 
+# ==================================================================== VERIFY
+#
+# A restore reports what it did. This reports what is true now: the vault as a
+# specification, the machine as the thing being checked against it. They are
+# different questions — a restore can finish cleanly and still leave a package
+# uninstalled because you said no to the AUR, and a machine can drift months
+# later without any restore having run at all.
+#
+# Exits non-zero when the machine does not match, so it can be the last line of
+# a provisioning script.
+
+# Names out of the vault, filtered and sorted, one per line.
+verify_list() {
+  local file="$1" predicate="$2" line
+  [[ -f $file ]] || return 0
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    "$predicate" "$line" && printf '%s\n' "$line"
+  done <"$file" | sort -u
+}
+
+cmd_verify() {
+  local as_json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) as_json=1; shift ;;
+      *) die "unknown verify option: $1" ;;
+    esac
+  done
+  resolve_vault
+  has_manifest || die "no vault at $VAULT — run: ress backup"
+  local manifest; manifest=$(manifest_path)
+
+  # Each category reports three things: how many the vault names, how many are
+  # here, and which ones are not.
+  local -A want=() have=() missing=()
+
+  # ---- packages
+  local installed; installed=$(mktemp)
+  pacman -Qq 2>/dev/null | sort -u >"$installed" || true
+  local wanted_pkgs; wanted_pkgs=$(mktemp)
+  { verify_list "$VAULT/packages/native.txt" valid_pkg
+    verify_list "$VAULT/packages/foreign.txt" valid_pkg
+  } | sort -u >"$wanted_pkgs"
+  want[packages]=$(count_lines "$wanted_pkgs")
+  missing[packages]=$(comm -23 "$wanted_pkgs" "$installed" | tr '\n' ' ' | sed 's/ $//')
+  have[packages]=$(( ${want[packages]} - $(printf '%s' "${missing[packages]}" | wc -w) ))
+  rm -f "$installed" "$wanted_pkgs"
+
+  # ---- dotfiles: what a restore would still have to write
+  want[config]=0; have[config]=0; missing[config]=""
+  if [[ -d $VAULT/home ]]; then
+    want[config]=$(find "$VAULT/home" -type f 2>/dev/null | wc -l)
+    local differing
+    # -i itemises; a line starting >f is a file whose contents or metadata
+    # differ from the vault's copy, which is exactly "not restored".
+    differing=$(rsync -ain --safe-links -- "$VAULT/home/" "$HOME/" 2>/dev/null |
+      grep -c '^>f' || true)
+    have[config]=$(( ${want[config]} - differing ))
+    (( differing > 0 )) && missing[config]="$differing differ from the vault"
+  fi
+
+  # ---- themes
+  local themes=0 themes_here=0 missing_themes=() name url tsha
+  if [[ -f $VAULT/omarchy/themes.tsv ]]; then
+    while IFS=$'\037' read -r name url tsha; do
+      [[ -n $name ]] || continue
+      valid_theme "$name" || continue
+      themes=$((themes + 1))
+      if [[ -d $HOME/.config/omarchy/themes/$name || -d $OMARCHY_DIR/themes/$name ]]; then
+        themes_here=$((themes_here + 1))
+      else
+        missing_themes+=("$name")
+      fi
+    done < <(tr '\t' '\037' <"$VAULT/omarchy/themes.tsv")
+  fi
+  want[themes]=$themes; have[themes]=$themes_here; missing[themes]="${missing_themes[*]:-}"
+
+  # ---- web apps
+  local webapps=0 webapps_here=0 missing_webapps=() desktop app
+  if [[ -d $VAULT/webapps/apps ]]; then
+    for desktop in "$VAULT"/webapps/apps/*.desktop; do
+      [[ -f $desktop ]] || continue
+      app=$(basename "$desktop" .desktop)
+      webapps=$((webapps + 1))
+      if [[ -f $HOME/.local/share/applications/$app.desktop ]]; then
+        webapps_here=$((webapps_here + 1))
+      else
+        missing_webapps+=("$app")
+      fi
+    done
+  fi
+  want[webapps]=$webapps; have[webapps]=$webapps_here; missing[webapps]="${missing_webapps[*]:-}"
+
+  # ---- plugins
+  local plugins=0 plugins_here=0 missing_plugins=() id
+  if [[ -f $VAULT/plugins/plugins.tsv ]]; then
+    while IFS=$'\037' read -r id url _ tsha; do
+      [[ -n $id ]] || continue
+      valid_id "$id" || continue
+      plugins=$((plugins + 1))
+      if [[ -f $HOME/.config/omarchy/plugins/$id/manifest.json ]]; then
+        plugins_here=$((plugins_here + 1))
+      else
+        missing_plugins+=("$id")
+      fi
+    done < <(tr '\t' '\037' <"$VAULT/plugins/plugins.tsv")
+  fi
+  want[plugins]=$plugins; have[plugins]=$plugins_here; missing[plugins]="${missing_plugins[*]:-}"
+
+  # ---- services
+  local units=0 units_here=0 missing_units=() unit
+  if [[ -s $VAULT/services/user-units.txt ]] && have systemctl; then
+    while IFS= read -r unit; do
+      [[ -n $unit ]] || continue
+      valid_unit "$unit" || continue
+      units=$((units + 1))
+      if systemctl --user is-enabled -- "$unit" >/dev/null 2>&1; then
+        units_here=$((units_here + 1))
+      else
+        missing_units+=("$unit")
+      fi
+    done <"$VAULT/services/user-units.txt"
+  fi
+  want[services]=$units; have[services]=$units_here; missing[services]="${missing_units[*]:-}"
+
+  local order=(packages config themes webapps plugins services)
+  local category complete=1
+  for category in "${order[@]}"; do
+    (( ${have[$category]} < ${want[$category]} )) && complete=0
+  done
+
+  if (( as_json )); then
+    local rows=""
+    for category in "${order[@]}"; do
+      rows+=$(jq -nc --arg k "$category" \
+        --argjson want "${want[$category]}" \
+        --argjson have "${have[$category]}" \
+        --arg missing "${missing[$category]}" \
+        '{key: $k, want: $want, have: $have,
+          missing: ($missing | split(" ") | map(select(length > 0)))}')
+      rows+=$'\n'
+    done
+    printf '%s' "$rows" | jq -s \
+      --arg vault "$VAULT" \
+      --argjson complete "$complete" \
+      --argjson manifest "$(cat "$manifest")" \
+      '{vault: $vault, complete: ($complete == 1),
+        takenAt: $manifest.createdAt, takenFrom: $manifest.machine.hostname,
+        categories: (map({key: .key, value: {want: .want, have: .have, missing: .missing}}) | from_entries)}'
+    (( complete )) || return 1
+    return 0
+  fi
+
+  printf '%sress verify%s — this machine against %s taken from %s\n\n' \
+    "$c_bold" "$c_reset" \
+    "$(plain "$(jq -r '.createdAt // "?"' "$manifest")")" \
+    "$(plain "$(jq -r '.machine.hostname // "?"' "$manifest")")"
+
+  local detail
+  for category in "${order[@]}"; do
+    if (( ${want[$category]} == 0 )); then
+      printf '  %-11s %snot in this vault%s\n' "$category" "$c_dim" "$c_reset"
+      continue
+    fi
+    detail="${missing[$category]}"
+    if (( ${have[$category]} >= ${want[$category]} )); then
+      printf '  %-11s %s✓%s %s of %s\n' "$category" "$c_green" "$c_reset" \
+        "${have[$category]}" "${want[$category]}"
+    else
+      printf '  %-11s %s✗%s %s of %s   %s%s%s\n' "$category" "$c_yellow" "$c_reset" \
+        "${have[$category]}" "${want[$category]}" "$c_dim" "$(plain "${detail:0:80}")" "$c_reset"
+    fi
+  done
+  printf '\n'
+  if (( complete )); then
+    printf '%sThis machine matches the vault.%s\n' "$c_green" "$c_reset"
+    return 0
+  fi
+
+  # A dotfile that differs is not the same as a package that is missing. One
+  # means a restore did not finish; the other usually means you have been using
+  # the machine, which is what it is for.
+  local absent=0 other
+  for other in packages themes webapps plugins services; do
+    (( ${have[$other]} < ${want[$other]} )) && absent=1
+  done
+  if (( absent )); then
+    printf '%sSome of the vault is not on this machine.%s Run: ress restore\n' "$c_yellow" "$c_reset"
+    (( ${want[services]} > ${have[services]} )) &&
+      printf '%sServices are only ever enabled on purpose: ress enable-units%s\n' "$c_dim" "$c_reset"
+  fi
+  if (( ${have[config]} < ${want[config]} )); then
+    printf '%sDotfiles here differ from the vault%s — usually because you have edited them\nsince the backup. `ress diff` shows what changed; `ress backup` records it.\n' \
+      "$c_dim" "$c_reset"
+  fi
+  return 1
+}
+
 # The scan the backup runs, on demand — before a push, or after adding something
 # to the capture list and wondering what came with it.
 cmd_scan() {
@@ -2158,7 +2375,7 @@ cmd_doctor() {
 # Arch install. Omarchy ships its own package manifest, so the honest number is
 # your explicit set minus what the ISO already lays down — and that difference,
 # not the whole list, is everything a restore has to fetch.
-STOCK_LISTS=(/usr/share/omarchy/install/omarchy-base.packages /usr/share/omarchy/install/omarchy-other.packages)
+STOCK_LISTS=("$OMARCHY_DIR/install/omarchy-base.packages" "$OMARCHY_DIR/install/omarchy-other.packages")
 
 stock_packages() {
   # The existence check has to happen outside the pipeline: every stage of a
@@ -2494,7 +2711,7 @@ cmd_share() {
     --arg author "$(git config --global user.name 2>/dev/null || whoami)" \
     --arg description "$description" \
     --arg createdAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --arg omarchy "$( [[ -f /usr/share/omarchy/version ]] && cat /usr/share/omarchy/version || echo unknown )" \
+    --arg omarchy "$( [[ -f $OMARCHY_DIR/version ]] && cat "$OMARCHY_DIR/version" || echo unknown )" \
     --argjson native "$(pacman -Qqen | jq -Rs 'split("\n") | map(select(length > 0))')" \
     --argjson aur "$(pacman -Qqem | jq -Rs 'split("\n") | map(select(length > 0))')" \
     --argjson plugins "$(collect_plugins_json)" \
@@ -2871,6 +3088,7 @@ case "$command" in
   link)    cmd_link "$@" ;;
   enable-units) cmd_enable_units "$@" ;;
   scan)    cmd_scan "$@" ;;
+  verify)  cmd_verify "$@" ;;
   ""|help) usage ;;
   *)       die "unknown command: $command (try --help)" ;;
 esac

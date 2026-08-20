@@ -53,8 +53,10 @@
 .config/user-dirs.dirs
 .config/systemd/user
 # .config/autostart is deliberately not here: every entry in it is a command
-# that runs the next time you log in. Add it back in ~/.config/ress/include if
-# that is what you want.
+# that runs the next time you log in, on whatever machine the vault is replayed
+# onto. Turn it on with `ress set CAPTURE_AUTOSTART=1` — the capture then says
+# how many entries came with it, and a restore counts them among the things the
+# vault will run.
 
 # ---- your own scripts ------------------------------------------------------
 .local/bin
