@@ -621,8 +621,8 @@ restore_omarchy() {
         step_warn omarchy "refused unsafe theme name from this vault"
         continue
       fi
-      if [[ -n $url ]] && ! valid_https "$url"; then
-        step_warn omarchy "theme $name has a non-https remote — refused"
+      if [[ -n $url ]] && ! valid_git_remote "$url"; then
+        step_warn omarchy "theme $name has an unsafe remote — refused"
         continue
       fi
       [[ -d $dest/themes/$name ]] && continue
@@ -704,8 +704,8 @@ restore_plugins() {
       step_warn plugins "refused unsafe plugin id from this vault"
       continue
     fi
-    if [[ -n $url ]] && ! valid_https "$url"; then
-      step_warn plugins "$id has a non-https remote — refused"
+    if [[ -n $url ]] && ! valid_git_remote "$url"; then
+      step_warn plugins "$id has an unsafe remote — refused"
       continue
     fi
     if [[ -z $url ]]; then
@@ -1188,6 +1188,17 @@ valid_theme() { [[ $1 =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] && [[ $1 != *".."* ]]; }
 valid_label() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9\ ._+\&-]{0,63}$ ]]; }
 valid_https() { [[ $1 =~ ^https://[A-Za-z0-9._~:/?\#@!\$\&\(\)*+,\;=%-]{3,512}$ ]]; }
 valid_unit()  { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9@._-]{0,127}\.(service|socket|timer|target|path|slice)$ ]]; }
+
+# Your own plugins and themes may legitimately be cloned over SSH, so restoring
+# your own vault accepts the ssh forms too — but never `file://`, never a bare
+# local path, and never anything that could start with `-` and be read as a git
+# option. A shared loadout stays https-only: it came from a stranger.
+valid_git_remote() {
+  valid_https "$1" && return 0
+  [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*:[A-Za-z0-9._~/-]{1,400}$ ]] && return 0
+  [[ $1 =~ ^(ssh|git)://[A-Za-z0-9][A-Za-z0-9._~@:/-]{1,400}$ ]] && return 0
+  return 1
+}
 
 # Read a newline-separated list, keep only what `predicate` accepts, and report
 # how much was thrown away so a tampered vault is loud rather than silent.

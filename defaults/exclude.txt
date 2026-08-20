@@ -32,3 +32,11 @@
 
 # systemd enable-state is captured declaratively, not as symlink farms
 **/*.wants/
+
+# ---- resurrect's own artifacts ---------------------------------------------
+# Restore keeps replaced files as *.resurrect-bak. Capturing them back would
+# accumulate a backup of a backup on every round trip.
+**/*.resurrect-bak
+# `ress link` recreates this symlink; capturing it copies a frozen snapshot of
+# the CLI that would then shadow the real one after a restore.
+.local/bin/ress
