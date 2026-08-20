@@ -2035,14 +2035,41 @@ cmd_init() {
   printf 'Run: ress backup\n'
 }
 
+# Settings whose value is a choice rather than free text. A misspelled choice
+# used to be accepted and then silently read as the default — so `AUR=yse` meant
+# "ask", and you found out the next time a restore stopped to ask you.
+declare -A CFG_CHOICES=(
+  [AUR]="ask yes no"
+  [ENABLE_UNITS]="ask yes no"
+  [SECRET_SCAN]="warn block off"
+  [AUTO_BACKUP]="on off"
+  [AUTO_PUSH]="0 1"
+  [CAPTURE_AUTOSTART]="0 1"
+  [INCLUDE_PACKAGES]="0 1"
+  [INCLUDE_CONFIG]="0 1"
+  [INCLUDE_OMARCHY]="0 1"
+  [INCLUDE_WEBAPPS]="0 1"
+  [INCLUDE_PLUGINS]="0 1"
+  [INCLUDE_SECRETS]="0 1"
+  [SECRETS_MODE]="passphrase recipient"
+)
+
 cmd_set() {
   (( $# > 0 )) || die "usage: ress set KEY=VALUE [KEY=VALUE...]"
-  local pair key value
+  local pair key value choice ok
   for pair in "$@"; do
     [[ $pair == *=* ]] || die "expected KEY=VALUE, got: $pair"
     key="${pair%%=*}"; value="${pair#*=}"
     key=$(printf '%s' "$key" | tr '[:lower:]-' '[:upper:]_')
     [[ -v CFG[$key] ]] || die "unknown setting: $key"
+    if [[ -v CFG_CHOICES[$key] ]]; then
+      ok=0
+      for choice in ${CFG_CHOICES[$key]}; do [[ $value == "$choice" ]] && ok=1; done
+      (( ok )) || die "$key must be one of: ${CFG_CHOICES[$key]} (got: $value)"
+    fi
+    [[ $key == VAULT && -z $value ]] && die "VAULT cannot be empty"
+    [[ $key == AUTO_INTERVAL_HOURS && ! $value =~ ^[0-9]+$ ]] &&
+      die "AUTO_INTERVAL_HOURS must be a whole number of hours (got: $value)"
     CFG[$key]="$value"
   done
   save_config
