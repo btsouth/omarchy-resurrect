@@ -614,25 +614,33 @@ restore_packages() {
     return 0
   fi
 
-  # `pacman -S` reads the local sync databases. A machine that has never run a
-  # refresh has none, which is the normal state of a fresh install -- the exact
-  # case this command exists for.
-  if (( n_count > 0 || f_count > 0 )) &&
-    [[ -z $(find /var/lib/pacman/sync -maxdepth 1 -name '*.db' 2>/dev/null | head -1) ]]; then
-    step_start packages "Refreshing package databases (this machine has never synced)"
-    if sudo pacman -Sy --noconfirm >/dev/null 2>&1; then
-      step_ok packages "databases refreshed"
-    else
-      step_warn packages "could not refresh databases - installs may fail"
-    fi
-  fi
-
   if (( n_count > 0 )); then
     step_start packages "Installing $n_count packages"
     if sudo pacman -S --needed --noconfirm -- "${safe_native[@]}"; then
       step_ok packages "repo packages installed"
     else
-      step_fail packages "some repo packages failed"; RESTORE_FAILED=1
+      # A freshly installed Omarchy carries the ISO's offline.db and none of the
+      # online databases, so the first install on a new machine fails with
+      # "target not found" until they are fetched. Checking for a database file
+      # is not enough — offline.db is one — so refresh and retry rather than
+      # trying to guess the state.
+      step_warn packages "install failed — refreshing package databases and retrying"
+      if sudo pacman -Sy --noconfirm >/dev/null 2>&1 &&
+        sudo pacman -S --needed --noconfirm -- "${safe_native[@]}"; then
+        step_ok packages "repo packages installed after a database refresh"
+      else
+        local still_missing=()
+        local pkg
+        for pkg in "${safe_native[@]}"; do
+          pacman -Q "$pkg" >/dev/null 2>&1 || still_missing+=("$pkg")
+        done
+        if (( ${#still_missing[@]} == 0 )); then
+          step_ok packages "repo packages installed after a database refresh"
+        else
+          step_fail packages "${#still_missing[@]} did not install: ${still_missing[*]}"
+          RESTORE_FAILED=1
+        fi
+      fi
     fi
   fi
 
