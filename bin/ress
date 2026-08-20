@@ -510,7 +510,10 @@ mark_done()      { printf '%s\n' "$1" >>"$RESTORE_STATE"; }
 
 # Never clobber in silence. Anything restore overwrites is moved aside first,
 # so a restore onto a machine you actually use is reversible.
-RSYNC_SAFE=(-a --backup --suffix=".resurrect-bak")
+# --safe-links drops any symlink in the vault that points outside the tree, so
+# a crafted vault cannot plant `.config/foo -> /etc` and have later writes
+# follow it out of $HOME.
+RSYNC_SAFE=(-a --safe-links --backup --suffix=".resurrect-bak")
 
 restore_packages() {
   local dir="$VAULT/packages"
@@ -524,9 +527,14 @@ restore_packages() {
   missing_native=$(comm -23 <(sort -u "$dir/native.txt") "$installed" || true)
   missing_foreign=$(comm -23 <(sort -u "$dir/foreign.txt") "$installed" || true)
 
-  local n_count f_count
-  n_count=$(printf '%s' "$missing_native" | grep -c . || true)
-  f_count=$(printf '%s' "$missing_foreign" | grep -c . || true)
+  # Everything below goes onto a command line that runs as root, so it is
+  # filtered to real package names first. `--` closes the option list as well,
+  # because two independent guards on a root invocation is the right number.
+  local safe_native=() safe_foreign=()
+  keep_valid valid_pkg packages "package names" <<<"$missing_native"; safe_native=("${KEPT[@]}")
+  keep_valid valid_pkg packages "package names" <<<"$missing_foreign"; safe_foreign=("${KEPT[@]}")
+
+  local n_count=${#safe_native[@]} f_count=${#safe_foreign[@]}
 
   if (( n_count == 0 && f_count == 0 )); then
     step_ok packages "already complete — nothing to install"
@@ -535,14 +543,13 @@ restore_packages() {
   step_ok packages "$n_count from the repos, $f_count from the AUR"
 
   if (( DRY_RUN )); then
-    printf '%s\n' $missing_native $missing_foreign | sed 's/^/    /'
+    printf '%s\n' "${safe_native[@]}" "${safe_foreign[@]}" | sed 's/^/    /'
     return 0
   fi
 
   if (( n_count > 0 )); then
     step_start packages "Installing $n_count packages"
-    # shellcheck disable=SC2086
-    if sudo pacman -S --needed --noconfirm $missing_native; then
+    if sudo pacman -S --needed --noconfirm -- "${safe_native[@]}"; then
       step_ok packages "repo packages installed"
     else
       step_fail packages "some repo packages failed"; RESTORE_FAILED=1
@@ -552,8 +559,7 @@ restore_packages() {
   if (( f_count > 0 )); then
     if have yay; then
       step_start packages "Building $f_count AUR packages"
-      # shellcheck disable=SC2086
-      if yay -S --needed --noconfirm --answerclean None --answerdiff None $missing_foreign; then
+      if yay -S --needed --noconfirm --answerclean None --answerdiff None -- "${safe_foreign[@]}"; then
         step_ok packages "AUR packages installed"
       else
         step_warn packages "some AUR packages failed — see packages/foreign.txt"
@@ -582,6 +588,7 @@ restore_config() {
     local unit enabled=0
     while IFS= read -r unit; do
       [[ -n $unit ]] || continue
+      valid_unit "$unit" || continue
       systemctl --user is-enabled "$unit" >/dev/null 2>&1 && continue
       systemctl --user enable "$unit" >/dev/null 2>&1 && enabled=$((enabled + 1))
     done <"$units"
@@ -610,6 +617,14 @@ restore_omarchy() {
   if [[ -f $dir/themes.tsv ]]; then
     while IFS=$'\t' read -r name url; do
       [[ -n $name ]] || continue
+      if ! valid_theme "$name"; then
+        step_warn omarchy "refused unsafe theme name from this vault"
+        continue
+      fi
+      if [[ -n $url ]] && ! valid_https "$url"; then
+        step_warn omarchy "theme $name has a non-https remote — refused"
+        continue
+      fi
       [[ -d $dest/themes/$name ]] && continue
       if [[ -n $url ]]; then
         if git clone -q --depth 1 "$url" "$dest/themes/$name" 2>/dev/null; then
@@ -630,6 +645,8 @@ restore_omarchy() {
 
   if [[ -f $dir/theme.name ]] && have omarchy-theme-set; then
     local theme; theme=$(<"$dir/theme.name")
+    theme="${theme//[[:space:]]/}"
+    valid_theme "$theme" || { step_warn omarchy "refused unsafe theme name"; return 0; }
     omarchy-theme-set "$theme" >/dev/null 2>&1 &&
       step_ok omarchy "theme set to $theme" ||
       step_warn omarchy "could not apply theme $theme"
@@ -645,7 +662,22 @@ restore_webapps() {
   (( DRY_RUN )) && { step_skip webapps "dry run"; return 0; }
 
   mkdir -p "$HOME/.local/share/applications" "$HOME/.local/share/icons/hicolor/256x256/apps"
-  rsync -a "$dir/apps/" "$HOME/.local/share/applications/"
+
+  # A .desktop file *is* an Exec line. Capture only ever writes launchers that
+  # run `omarchy-launch-webapp`, so anything else in a vault was put there by
+  # someone else and is not copied.
+  local desktop base exec_line refused=0
+  for desktop in "$dir"/apps/*.desktop; do
+    [[ -f $desktop ]] || continue
+    base=$(basename "$desktop")
+    exec_line=$(sed -n 's/^Exec=//p' "$desktop" | head -1)
+    if [[ $exec_line != "omarchy-launch-webapp "* && $exec_line != "omarchy-launch-or-focus-webapp "* ]]; then
+      refused=$((refused + 1))
+      continue
+    fi
+    cp "$desktop" "$HOME/.local/share/applications/$base"
+  done
+  (( refused == 0 )) || step_warn webapps "refused $refused launcher(s) that do not run omarchy-launch-webapp"
   [[ -d $dir/icons ]] && rsync -a "$dir/icons/" "$HOME/.local/share/icons/hicolor/256x256/apps/"
   chmod +x "$HOME"/.local/share/applications/*.desktop 2>/dev/null || true
   have gtk-update-icon-cache && gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" &>/dev/null || true
@@ -660,19 +692,32 @@ restore_plugins() {
   local total; total=$(count_lines "$file")
   (( total > 0 )) || { step_skip plugins "none in this vault"; return 0; }
   step_start plugins "Reinstalling $total plugins"
-  (( DRY_RUN )) && { sed 's/^/    /' "$file"; return 0; }
 
   local id url enabled i=0 ok=0
   while IFS=$'\t' read -r id url enabled; do
     i=$((i + 1))
     progress plugins "$i" "$total"
     [[ -n $id ]] || continue
+    # `$id` is used as a directory name that is cloned into and, on failure,
+    # removed. An id of `../../..` would take the removal with it.
+    if ! valid_id "$id"; then
+      step_warn plugins "refused unsafe plugin id from this vault"
+      continue
+    fi
+    if [[ -n $url ]] && ! valid_https "$url"; then
+      step_warn plugins "$id has a non-https remote — refused"
+      continue
+    fi
     if [[ -z $url ]]; then
       step_warn plugins "$id has no git remote — install it by hand"
       continue
     fi
     if [[ -d $HOME/.config/omarchy/plugins/$id ]]; then
       ok=$((ok + 1)); continue
+    fi
+    if (( DRY_RUN )); then
+      printf '    %s  %s\n' "$id" "$url"
+      continue
     fi
     # Prefer the real installer when the shell is up (it validates the manifest
     # and warns about running third-party code); fall back to a plain clone so a
@@ -1126,13 +1171,35 @@ PROFILE_SCHEMA=1
 PROFILE_DIR_DEFAULT="${XDG_DATA_HOME:-$HOME/.local/share}/ress/profile"
 APPLY_WORK=""
 
-# Anything read out of someone else's profile passes through these before it
-# reaches a command line. A name that does not match is dropped, not quoted.
+# ---------------------------------------------------- untrusted vault input
+#
+# A vault is not necessarily yours. `restore --from <git-url>` fetches one over
+# the network, so every value read out of a vault or a loadout is attacker
+# controlled until it matches one of these. A name that does not match is
+# dropped, never quoted and passed along.
+#
+# The leading-character rules are load-bearing: they are what stops a vault
+# entry like `-U` or `--overwrite=/etc/passwd` from arriving as an *option* on a
+# root pacman command line, and what stops an id of `../../..` from becoming a
+# path that gets removed.
 valid_pkg()   { [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9@._+-]{0,127}$ ]]; }
 valid_id()    { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] && [[ $1 != *".."* ]]; }
 valid_theme() { [[ $1 =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] && [[ $1 != *".."* ]]; }
 valid_label() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9\ ._+\&-]{0,63}$ ]]; }
 valid_https() { [[ $1 =~ ^https://[A-Za-z0-9._~:/?\#@!\$\&\(\)*+,\;=%-]{3,512}$ ]]; }
+valid_unit()  { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9@._-]{0,127}\.(service|socket|timer|target|path|slice)$ ]]; }
+
+# Read a newline-separated list, keep only what `predicate` accepts, and report
+# how much was thrown away so a tampered vault is loud rather than silent.
+keep_valid() {
+  local predicate="$1" category="$2" what="$3" line dropped=0
+  KEPT=()
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    if "$predicate" "$line"; then KEPT+=("$line"); else dropped=$((dropped + 1)); fi
+  done
+  (( dropped == 0 )) || step_warn "$category" "refused $dropped unsafe $what from this vault"
+}
 
 RESS_HOST="ress.sh"
 
