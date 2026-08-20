@@ -566,6 +566,7 @@ face on top of it, and every button is one subcommand with `--porcelain`.
 ```bash
 ./tests/run.sh              # every case
 ./tests/run.sh aur          # just the ones whose name matches
+./tests/mutate.sh           # break each behaviour, check a test notices
 ```
 
 Each case runs against a throwaway `$HOME` with test doubles on `PATH` for
@@ -574,6 +575,12 @@ can assert that a restore *did not* call something. Nothing outside the sandbox
 is read or written: no package is installed, no unit is enabled, and the fake
 `sudo` has no privileges — it records the call and runs the rest of the line as
 you.
+
+A passing suite says the tests agree with the code, not that they would notice
+if the code were wrong. `tests/mutate.sh` is the check on that: it breaks one
+behaviour at a time in a throwaway copy — the AUR gate always builds, the unit
+gate always enables, the scanner never finds anything, `verify` always says the
+machine matches — and reports any mutation no test caught.
 
 ### A note on the plugin id
 
