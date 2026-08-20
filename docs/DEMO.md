@@ -78,7 +78,11 @@ better demo than a run that never stumbles.
 
 ## 4. Check it actually worked
 
+`ress` is not on PATH until you link it, so either run `ress link` first or use
+the full path below.
+
 ```bash
+~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress link
 ress status                       # counts should match the source machine
 ress diff --stock                 # should now report 0 packages to fetch
 pacman -Qq | wc -l                # package count in the same range

@@ -88,8 +88,14 @@ omarchy plugin add https://github.com/tsouth89/omarchy-resurrect --yes
 ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress restore --from https://github.com/you/my-omarchy-vault
 ```
 
-The second command clones your vault and replays it. The restore is
-**resumable** — if the AUR times out or the power goes, run it again and it
+The second command clones your vault and replays it. Afterwards, put `ress` on
+your PATH so you can use the short name:
+
+```bash
+~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress link
+```
+
+The restore is **resumable** — if the AUR times out or the power goes, run it again and it
 picks up at the step it stopped on.
 
 ---
