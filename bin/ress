@@ -1922,6 +1922,12 @@ cmd_status() {
         --argjson plugins "${CFG[INCLUDE_PLUGINS]}" \
         --argjson secrets "${CFG[INCLUDE_SECRETS]}" \
         '$ARGS.named | map_values(. == 1)')" \
+      --argjson settings "$(jq -n \
+        --arg aur "${CFG[AUR]}" \
+        --arg enableUnits "${CFG[ENABLE_UNITS]}" \
+        --arg secretScan "${CFG[SECRET_SCAN]}" \
+        --argjson captureAutostart "$( [[ ${CFG[CAPTURE_AUTOSTART]} == 1 ]] && echo true || echo false )" \
+        '$ARGS.named')" \
       --argjson manifest "$( has_manifest && cat "$(manifest_path)" || echo null )" \
       '$ARGS.named'
     return 0
@@ -3022,6 +3028,9 @@ ${c_bold}ress${c_reset} $VERSION — capture an Omarchy machine, replay it onto 
 
   ${c_bold}ress restore${c_reset} [--from GIT_URL] [--only LIST] [--skip LIST] [--dry-run]
       Replay a vault onto this machine. Resumable; rerun to continue.
+      Two things it will not do without being asked: build an AUR package
+      (--aur, --no-aur, --review-aur) and enable a systemd user service
+      (--enable-units, --no-enable-units). --yes does not answer either.
 
   ${c_bold}ress share${c_reset} [--name NAME] [--out DIR]
       Export a loadout: the package, plugin, web app and theme list, with
@@ -3030,14 +3039,22 @@ ${c_bold}ress${c_reset} $VERSION — capture an Omarchy machine, replay it onto 
   ${c_bold}ress apply${c_reset} <git-url> [--dry-run]
       Install someone else's loadout. Shows the full list and asks first.
 
+  ${c_bold}ress verify${c_reset} [--json]      Check this machine against the vault, and
+                            exit non-zero if it does not match.
+  ${c_bold}ress scan${c_reset} [--json]        Look through the vault for anything shaped
+                            like a credential.
+  ${c_bold}ress enable-units${c_reset} [--all] [UNIT...]
+                            Turn on the user services a backup recorded,
+                            after reading what each one runs.
+
   ${c_bold}ress status${c_reset} [--json]      What is captured, and when.
-  ${c_bold}ress diff${c_reset} [--stock]        What changed since the last backup, or how far
-                                    this machine is from a stock Omarchy install.
-  ${c_bold}ress init${c_reset} [--remote URL]   Create the vault.
-  ${c_bold}ress set${c_reset} KEY=VALUE         Change a setting.
+  ${c_bold}ress diff${c_reset} [--stock]       What changed since the last backup, or how
+                            far this machine is from a stock Omarchy install.
+  ${c_bold}ress init${c_reset} [--remote URL]  Create the vault.
+  ${c_bold}ress set${c_reset} KEY=VALUE        Change a setting.
   ${c_bold}ress secrets${c_reset} <init|list|add|enable|disable>
-  ${c_bold}ress doctor${c_reset}                Check this machine is ready.
-  ${c_bold}ress link${c_reset}                  Put `ress` on your PATH (~/.local/bin).
+  ${c_bold}ress doctor${c_reset}               Check this machine is ready.
+  ${c_bold}ress link${c_reset}                 Put \`ress\` on your PATH (~/.local/bin).
 
 Loadout links are ress.sh/gh/<user>/<repo>, which is a redirect to GitHub and
 nothing else — resolved on this machine, before any request is made. Plain
@@ -3045,6 +3062,8 @@ GitHub URLs work everywhere a ress.sh link does.
 
 Categories: ${CATEGORIES[*]}
 Config:     $CONFIG_FILE
+Settings:   AUR=${CFG[AUR]} ENABLE_UNITS=${CFG[ENABLE_UNITS]} SECRET_SCAN=${CFG[SECRET_SCAN]}
+            CAPTURE_AUTOSTART=${CFG[CAPTURE_AUTOSTART]}   (change with \`ress set KEY=VALUE\`)
 USAGE
 }
 

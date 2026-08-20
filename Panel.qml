@@ -51,6 +51,8 @@ Panel {
     for (var i = 0; i < Model.CATEGORIES.length; i++)
       out.push({ id: "cat:" + Model.CATEGORIES[i].key, label: Model.CATEGORIES[i].label })
     out.push({ id: "auto", label: "Scheduled backups" })
+    out.push({ id: "aur", label: "Building AUR packages" })
+    out.push({ id: "units", label: "Enabling user services" })
     return out
   }
 
@@ -96,6 +98,12 @@ Panel {
       case "auto":
         engine.setValue("AUTO_BACKUP", engine.autoBackup ? "off" : "on")
         break
+      case "aur":
+        engine.setValue("AUR", nextConsent(engine.aurMode))
+        break
+      case "units":
+        engine.setValue("ENABLE_UNITS", nextConsent(engine.enableUnits))
+        break
       case "share":
         if (!engine.shareNow()) flash("Already running")
         break
@@ -121,6 +129,11 @@ Panel {
         root.close()
         break
     }
+  }
+
+  // ask -> yes -> no -> ask. Three states, so this cycles rather than toggles.
+  function nextConsent(value) {
+    return value === "ask" ? "yes" : (value === "yes" ? "no" : "ask")
   }
 
   function flash(message) { notice = message; noticeTimer.restart() }
@@ -427,6 +440,26 @@ Panel {
                 : "off"
               trailing: true
               trailingOn: engine.autoBackup
+            }
+
+            // The two decisions a restore never takes on its own. They are here
+            // as well as in the config file because a setting you cannot see is
+            // a setting you cannot have agreed to.
+            ActionRow {
+              width: parent.width
+              rowId: "aur"
+              glyph: ""
+              title: "Building AUR packages"
+              subtitle: Model.consent(engine.aurMode,
+                "builds without asking", "never builds them", "asks first · recommended")
+            }
+            ActionRow {
+              width: parent.width
+              rowId: "units"
+              glyph: ""
+              title: "Enabling user services"
+              subtitle: Model.consent(engine.enableUnits,
+                "enables without asking", "never enables them", "asks first · recommended")
             }
 
             Text {

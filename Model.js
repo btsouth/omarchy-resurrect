@@ -40,6 +40,14 @@ function plural(n, one, many) {
   return n + " " + (n === 1 ? one : (many || one + "s"))
 }
 
+// A consent setting has three states, and none of them is well described by
+// "on". Said in words here, so the panel and the CLI agree on what ask means.
+function consent(value, whenYes, whenNo, whenAsk) {
+  if (value === "yes") return whenYes
+  if (value === "no") return whenNo
+  return whenAsk
+}
+
 function summarize(counts) {
   if (!counts) return ""
   return [

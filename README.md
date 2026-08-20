@@ -106,15 +106,17 @@ picks up at the step it stopped on.
 | Category | What it captures | How it comes back |
 |---|---|---|
 | **Packages** | `pacman -Qqen` and `pacman -Qqem` | only the ones missing here get installed |
-| **Dotfiles** | a curated list under `$HOME` — shells, Hyprland, terminals, editors | rsync, with every replaced file kept as `*.resurrect-bak` |
+| **Dotfiles** | a curated list under `$HOME` — shells, Hyprland, terminals, editors | rsync, with every replaced file kept as `*.ress-bak` |
 | **Omarchy** | `shell.json` bar layout, themes, hooks, extensions, branding, active theme | git themes re-cloned at the recorded commit, hand-made themes copied |
 | **Web apps** | the `.desktop` launchers made by `omarchy webapp`, plus icons | rebuilt through `omarchy webapp install` from the name, URL and icon — never copied |
 | **Plugins** | every shell plugin: git remote, **exact commit**, enabled state | cloned and checked out at that commit, detached |
 | **Secrets** | *off by default* — a list you write yourself | `age`-encrypted; see [Secrets](#secrets) |
 
-It also records which **systemd user services** you have enabled and re-enables
-them, rather than copying the `.wants/` symlink farms — those are state, and
-copying them produces unit files that shadow the real ones.
+It also records which **systemd user services** you have enabled, rather than
+copying the `.wants/` symlink farms — those are state, and copying them produces
+unit files that shadow the real ones. Re-enabling them on the far side is a
+separate question that a restore always asks; see
+[Two things restore will not do](#two-things-restore-will-not-do-on-its-own).
 
 ## What does not travel
 
@@ -125,7 +127,9 @@ Deliberately, and this list is the point:
   path a secret can take is the opt-in encrypted one.
 - **`~/.config/autostart`**, by default. Every entry in it is a command that runs
   the next time you log in, which is not something a backup should quietly hand
-  to another machine. Add it in `~/.config/ress/include` if you want it.
+  to another machine. `ress set CAPTURE_AUTOSTART=1` turns it on; the capture
+  then says how many entries came with it, and a restore counts them among the
+  things the vault will run.
 - **Anything over 20 MB**, caches, `node_modules`, `.venv`, `target`, build output.
 - **Machine identity.** Disk UUIDs, hostname, network state, hardware config.
   A restore should make a machine *yours*, not make it pretend to be another one.
@@ -222,8 +226,13 @@ root is a button you should not trust. You watch it and you answer it.
 ress backup [-m MSG] [--push] [--secrets]   capture this machine
 ress restore [--from URL] [--only LIST]     replay a vault, resumably
               [--skip LIST] [--dry-run] [--restart]
+              [--aur|--no-aur|--review-aur]
+              [--enable-units|--no-enable-units]
 ress share [--name NAME]                    export a shareable loadout
 ress apply <link> [--dry-run]               install someone else's loadout
+ress verify [--json]                        check this machine against the vault
+ress scan [--json]                          look for credentials in the vault
+ress enable-units [--all] [UNIT...]         turn on the services a backup recorded
 ress status [--json]                        what is captured, and when
 ress diff [--stock]                         what changed since the last backup,
                                             or how far this machine is from stock
@@ -235,7 +244,66 @@ ress link                                   put `ress` on your PATH
 ```
 
 Every command is non-interactive with `--yes`, and speaks a line protocol with
-`--porcelain` — which is exactly how the panel drives it.
+`--porcelain` — which is exactly how the panel drives it. `--yes` answers ress's
+own questions about overwriting your files; it deliberately does not answer the
+two below.
+
+`ress verify` exits non-zero when the machine does not match the vault, so it
+can be the last line of a provisioning script:
+
+```bash
+ress restore --from https://github.com/you/my-vault --yes --aur --enable-units
+ress verify || exit 1
+```
+
+## Two things restore will not do on its own
+
+Everything a restore does is a write: a file lands somewhere and sits there.
+Two steps are different in kind, and both ask first.
+
+**Building an AUR package.** Every other package comes as a signed binary from
+the Arch repositories. An AUR package is a PKGBUILD — a shell script fetched
+from `aur.archlinux.org` and run on this machine as it builds. That is the one
+point where names in a vault become somebody else's code running here.
+
+```
+3 packages from the AUR:
+
+    brave-bin
+    ttf-fancy
+    questionable                     not on aur.archlinux.org
+
+Each one is a PKGBUILD fetched from aur.archlinux.org and run here as it
+builds. Nothing signs them and nobody reviews them.
+
+  [y] build them   [r] review each PKGBUILD first   [N] skip
+```
+
+`[r]` runs `yay` without `--noconfirm` and without `--answerclean/--answerdiff`,
+so yay shows you each PKGBUILD and its diff instead of ress answering those
+questions on your behalf. The list is annotated before you answer: names with
+nothing behind them upstream, and names the official repositories have since
+picked up. `~/.config/ress/aur-deny` drops names before the question is asked.
+
+Declining is neither a failure nor a finish — the category is reported under
+"Left for later" and offered again next run, rather than skipped as done.
+
+**Enabling a systemd user service.** This is the only step that arranges for
+code to run later without anyone asking again, so the prompt shows what each
+unit actually runs:
+
+```
+2 user services from this vault, enabled there and not here:
+
+    syncthing.service                  /usr/bin/syncthing serve --no-browser
+    phone-home.service                 /home/someone/.local/bin/phone-home --every 60
+
+Enabling them starts them with your session from now on.
+Enable 2 user services? [y/N]
+```
+
+`ress enable-units` asks the same question later, if you said no or ran without
+a terminal. Both settings take `ask` (the default), `yes` or `no`.
 
 ## Dependencies
 
@@ -285,10 +353,21 @@ INCLUDE_OMARCHY=1
 INCLUDE_WEBAPPS=1
 INCLUDE_PLUGINS=1
 INCLUDE_SECRETS=0
+
+# The two things a restore never does on its own: ask | yes | no
+AUR=ask
+ENABLE_UNITS=ask
+
+# What to do when a capture looks like it picked up a credential: warn | block | off
+SECRET_SCAN=warn
+
+# ~/.config/autostart: every entry is a command that runs at your next login
+CAPTURE_AUTOSTART=0
 ```
 
 Add paths in `~/.config/ress/include`, exclude patterns in
-`~/.config/ress/exclude`. Both are appended to the lists ress ships in
+`~/.config/ress/exclude`, and AUR packages you never want built in
+`~/.config/ress/aur-deny`. All three are appended to the lists ress ships in
 `defaults/`.
 
 Scheduled backups are event-driven, not polled: the timer is set to the
@@ -329,9 +408,33 @@ no install hooks, no post-install scripts, no `sudo`. The manifest declares
   an explicit confirmation.
 
 Neither ever removes a package, and only one process can touch a vault at a
-time. Restore keeps every file it replaces as `*.resurrect-bak` — including the
+time. Restore keeps every file it replaces as `*.ress-bak` — including the
 bar layout, web app launchers and anything restored from the encrypted secrets
 bundle.
+
+**The vault is read back before it is committed.** The capture list is an
+allowlist and credentials are not on it — but that is a design, not a guarantee,
+and the risk it leaves is a key inside a file that *does* belong in the vault: a
+token pasted into a script in `~/.local/bin`, an `Environment=` line in a user
+unit. So `ress backup` scans the vault for the shapes credentials have before it
+commits, because a commit is the point at which one becomes history, and history
+is what gets pushed.
+
+```
+$ ress scan
+Possible credentials in the vault (1 file):
+
+    home/.local/bin/deploy                               github-token
+
+The match is not shown, and is not written down anywhere.
+```
+
+The match is never printed and never saved — the point is to name the file, and
+a report that quotes the secret is a second copy of it. The finding list goes to
+`~/.local/state/ress`, never into the vault. `SECRET_SCAN=block` refuses the
+commit outright. It is a check against known token formats and self-naming
+assignments, not a proof: a secret with no shape to it looks like any other
+string, and `ress scan` says so.
 
 **A loadout cannot embed a file or a command.** The profile format is one JSON
 file whose fields are names and URLs — package names, a theme name, git URLs,
@@ -417,6 +520,26 @@ omarchy-restart-shell          # QML edits need a restart; hot reload can serve 
 The CLI (`bin/ress`) is the whole engine and has no QML dependency — it runs
 from a TTY on a machine with no desktop. `Panel.qml` and `Service.qml` are a
 face on top of it, and every button is one subcommand with `--porcelain`.
+
+```bash
+./tests/run.sh              # every case
+./tests/run.sh aur          # just the ones whose name matches
+```
+
+Each case runs against a throwaway `$HOME` with test doubles on `PATH` for
+`pacman`, `yay`, `sudo`, `systemctl`, `curl` and the `omarchy` CLI, so a case
+can assert that a restore *did not* call something. Nothing outside the sandbox
+is read or written: no package is installed, no unit is enabled, and the fake
+`sudo` has no privileges — it records the call and runs the rest of the line as
+you.
+
+### A note on the plugin id
+
+The plugin id is `tsouth89.resurrect`, from before the project settled on the
+name `ress`. It stays: the marketplace keys its registry on it, `shell.json`
+records it as the bar entry, and the install directory is named after it, so
+changing it would remove the widget from the bar of everyone who has it. Read
+it the way you read a bundle identifier — the tool is `ress`.
 
 ## License
 

@@ -64,6 +64,10 @@ Item {
   readonly property string vault: setting("VAULT", home + "/.local/share/ress/vault")
   readonly property string remote: setting("REMOTE", "")
   readonly property bool autoBackup: setting("AUTO_BACKUP", "off") === "on"
+  // The two things a restore will not do without being asked. Three states
+  // each — ask, yes, no — so they are strings rather than booleans.
+  readonly property string aurMode: setting("AUR", "ask")
+  readonly property string enableUnits: setting("ENABLE_UNITS", "ask")
   readonly property int intervalHours: Math.max(1, parseInt(setting("AUTO_INTERVAL_HOURS", "24"), 10) || 24)
 
   signal finished(string action, string state)
