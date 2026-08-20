@@ -41,6 +41,7 @@ CATEGORIES=(packages config omarchy webapps plugins secrets)
 PORCELAIN=0
 DRY_RUN=0
 ASSUME_YES=0
+ALLOW_UNPINNED=0
 
 c_reset=$'\e[0m'; c_dim=$'\e[2m'; c_bold=$'\e[1m'
 c_green=$'\e[32m'; c_red=$'\e[31m'; c_yellow=$'\e[33m'; c_blue=$'\e[34m'
@@ -255,7 +256,7 @@ capture_config() {
     i=$((i + 1))
     progress config "$i" "$total"
     [[ -e $HOME/$entry ]] || { missing=$((missing + 1)); continue; }
-    rsync -a --relative --copy-links --exclude-from="$excludes" \
+    rsync -a --relative --safe-links --exclude-from="$excludes" \
       --max-size=20m "$HOME/./$entry" "$out/" 2>/dev/null || true
     present=$((present + 1))
   done
@@ -284,6 +285,26 @@ capture_config() {
     [[ $base == ".config/omarchy" ]] && continue
     printf '%s\n' "$base" >>"$skipped/not-captured.txt"
   done
+  # --safe-links drops symlinks that point outside the captured tree. That is
+  # what stops a link from smuggling an excluded file in under another name, but
+  # it also means the target genuinely did not travel — so say which.
+  : >"$skipped/symlinks-skipped.txt"
+  local link target
+  for entry in "${entries[@]}"; do
+    [[ -e $HOME/$entry ]] || continue
+    while IFS= read -r link; do
+      # *.wants/ links are systemd enable-state, captured separately as unit
+      # names; *.resurrect-bak are our own leftovers. Neither is lost, so
+      # neither belongs in a report about things that did not travel.
+      [[ $link == */.wants/* || $link == *.wants/* || $link == *.resurrect-bak ]] && continue
+      target=$(readlink -f "$link" 2>/dev/null || true)
+      [[ -n $target && $target == "$HOME"/* ]] && continue
+      printf '%s -> %s\n' "${link#"$HOME"/}" "${target:-<broken>}" >>"$skipped/symlinks-skipped.txt"
+    done < <(find "$HOME/$entry" -type l 2>/dev/null)
+  done
+  local links; links=$(count_lines "$skipped/symlinks-skipped.txt")
+  (( links == 0 )) || step_warn config "$links symlink(s) point outside your home and were not followed (see report/symlinks-skipped.txt)"
+
   local unknown; unknown=$(count_lines "$skipped/not-captured.txt")
 
   CAPTURED_CONFIG=$present
@@ -318,9 +339,9 @@ capture_omarchy() {
     name=$(basename "$theme")
     url=$(git -C "$theme" remote get-url origin 2>/dev/null || true)
     if [[ -n $url ]]; then
-      printf '%s\t%s\n' "$name" "$url" >>"$out/themes.tsv"
+      printf '%s\t%s\t%s\n' "$name" "$url" "$(git -C "$theme" rev-parse HEAD 2>/dev/null || true)" >>"$out/themes.tsv"
     else
-      printf '%s\t\n' "$name" >>"$out/themes.tsv"
+      printf '%s\t\t\n' "$name" >>"$out/themes.tsv"
       rsync -a --exclude '.git/' --exclude-from="$excludes" --max-size=20m -- "$theme" "$out/themes/$name/" 2>/dev/null
     fi
   done
@@ -370,15 +391,16 @@ capture_plugins() {
   : >"$out/plugins.tsv"
   step_start plugins "Listing shell plugins"
 
-  local n=0 dir id url enabled shell_json="$HOME/.config/omarchy/shell.json"
+  local n=0 dir id url sha enabled shell_json="$HOME/.config/omarchy/shell.json"
   for dir in "$HOME"/.config/omarchy/plugins/*/; do
     [[ -f $dir/manifest.json ]] || continue
     id=$(jq -r '.id // empty' "$dir/manifest.json" 2>/dev/null) || continue
     [[ -n $id ]] || continue
     url=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
+    sha=$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)
     enabled=0
     if [[ -f $shell_json ]] && grep -qF "\"$id\"" "$shell_json"; then enabled=1; fi
-    printf '%s\t%s\t%s\n' "$id" "$url" "$enabled" >>"$out/plugins.tsv"
+    printf '%s\t%s\t%s\t%s\n' "$id" "$url" "$enabled" "$sha" >>"$out/plugins.tsv"
     n=$((n + 1))
     [[ -z $url ]] && step_warn plugins "$id has no git remote — it will not be restored"
   done
@@ -657,7 +679,7 @@ restore_omarchy() {
   # pointing it at a theme that is not on disk yet gives you a grey desktop.
   local name url installed=0
   if [[ -f $dir/themes.tsv ]]; then
-    while IFS=$'\t' read -r name url; do
+    while IFS=$'\t' read -r name url tsha; do
       [[ -n $name ]] || continue
       if ! valid_theme "$name"; then
         step_warn omarchy "refused unsafe theme name from this vault"
@@ -669,7 +691,11 @@ restore_omarchy() {
       fi
       [[ -d $dest/themes/$name ]] && continue
       if [[ -n $url ]]; then
-        if git clone -q --depth 1 -- "$url" "$dest/themes/$name" 2>/dev/null; then
+        if [[ -n $tsha ]] && ! valid_sha "$tsha"; then
+          step_warn omarchy "theme $name has a malformed commit — refused"
+          continue
+        fi
+        if clone_pinned "$url" "$dest/themes/$name" "$tsha"; then
           installed=$((installed + 1))
         else
           step_warn omarchy "could not clone theme $name from $url"
@@ -744,8 +770,8 @@ restore_plugins() {
   (( total > 0 )) || { step_skip plugins "none in this vault"; return 0; }
   step_start plugins "Reinstalling $total plugins"
 
-  local id url enabled i=0 ok=0
-  while IFS=$'\t' read -r id url enabled; do
+  local id url enabled sha i=0 ok=0
+  while IFS=$'\t' read -r id url enabled sha; do
     i=$((i + 1))
     progress plugins "$i" "$total"
     [[ -n $id ]] || continue
@@ -763,29 +789,34 @@ restore_plugins() {
       step_warn plugins "$id has no git remote — install it by hand"
       continue
     fi
-    if [[ -d $HOME/.config/omarchy/plugins/$id ]]; then
+    if [[ -n $sha ]] && ! valid_sha "$sha"; then
+      step_warn plugins "$id has a malformed commit — refused"
+      continue
+    fi
+    local target="$HOME/.config/omarchy/plugins/$id"
+    if [[ -d $target ]]; then
       ok=$((ok + 1)); continue
     fi
     if (( DRY_RUN )); then
-      printf '    %s  %s\n' "$id" "$url"
+      printf '    %s  %s  %s\n' "$id" "$url" "${sha:0:12}${sha:+ (pinned)}"
       continue
     fi
-    # Prefer the real installer when the shell is up (it validates the manifest
-    # and warns about running third-party code); fall back to a plain clone so a
-    # restore also works from a TTY before the desktop exists.
-    if omarchy-shell shell ping >/dev/null 2>&1; then
-      local args=(--yes)
-      [[ $enabled == 1 ]] && args+=(--enable)
-      if omarchy plugin add "$url" "${args[@]}" >/dev/null 2>&1; then
-        ok=$((ok + 1)); continue
-      fi
+    # An unpinned plugin is whatever upstream contains right now, which is not
+    # what was captured. That code runs inside the shell, so it is refused
+    # unless you say otherwise.
+    if [[ -z $sha ]] && (( ! ALLOW_UNPINNED )); then
+      step_warn plugins "$id has no recorded commit — skipped (pass --allow-unpinned to take the branch head)"
+      continue
     fi
-    if git clone -q --depth 1 -- "$url" "$HOME/.config/omarchy/plugins/$id" 2>/dev/null &&
-      omarchy plugin validate "$HOME/.config/omarchy/plugins/$id" >/dev/null 2>&1; then
+    if clone_pinned "$url" "$target" "$sha" &&
+      omarchy plugin validate "$target" >/dev/null 2>&1; then
       ok=$((ok + 1))
+      if [[ $enabled == 1 ]] && omarchy-shell shell ping >/dev/null 2>&1; then
+        omarchy plugin enable "$id" >/dev/null 2>&1 || true
+      fi
     else
-      rm -rf "$HOME/.config/omarchy/plugins/$id"
-      step_warn plugins "could not add $id from $url"
+      rm -rf "$target"
+      step_warn plugins "could not install $id from $url"
     fi
   done <"$file"
   step_ok plugins "$ok of $total plugins in place"
@@ -1287,6 +1318,7 @@ valid_pkg()   { [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9@._+-]{0,127}$ ]]; }
 valid_id()    { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] && [[ $1 != *".."* ]]; }
 valid_theme() { [[ $1 =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] && [[ $1 != *".."* ]]; }
 valid_icon()  { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; }
+valid_sha()   { [[ $1 =~ ^[0-9a-f]{40}$ ]]; }
 valid_label() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9\ ._+\&-]{0,63}$ ]]; }
 valid_https() { [[ $1 =~ ^https://[A-Za-z0-9._~:/?\#@!\$\&\(\)*+,\;=%-]{3,512}$ ]]; }
 valid_unit()  { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9@._-]{0,127}\.(service|socket|timer|target|path|slice)$ ]]; }
@@ -1312,6 +1344,33 @@ keep_valid() {
     if "$predicate" "$line"; then KEPT+=("$line"); else dropped=$((dropped + 1)); fi
   done
   (( dropped == 0 )) || step_warn "$category" "refused $dropped unsafe $what from this vault"
+}
+
+# Clone `url` into `target` at exactly `sha`, detached. A branch head moves; the
+# commit that was captured — or that a loadout's author published and a reviewer
+# looked at — does not. Without this, restoring or applying installs whatever
+# upstream happens to contain today, which is code nobody agreed to run.
+clone_pinned() {
+  local url="$1" target="$2" sha="$3"
+  rm -rf "$target"
+  if [[ -z $sha ]]; then
+    git clone -q --depth 1 -- "$url" "$target" >/dev/null 2>&1
+    return $?
+  fi
+  if git init -q "$target" >/dev/null 2>&1 &&
+    git -C "$target" remote add origin "$url" >/dev/null 2>&1 &&
+    git -C "$target" fetch -q --depth 1 origin "$sha" >/dev/null 2>&1 &&
+    git -C "$target" checkout -q --detach FETCH_HEAD >/dev/null 2>&1; then
+    return 0
+  fi
+  # Hosts that refuse fetch-by-sha: take the history and pin locally instead.
+  rm -rf "$target"
+  if git clone -q -- "$url" "$target" >/dev/null 2>&1 &&
+    git -C "$target" checkout -q --detach "$sha" >/dev/null 2>&1; then
+    return 0
+  fi
+  rm -rf "$target"
+  return 1
 }
 
 RESS_HOST="ress.sh"
@@ -1369,7 +1428,7 @@ collect_webapps_json() {
 }
 
 collect_plugins_json() {
-  local dir id url
+  local dir id url sha
   for dir in "$HOME"/.config/omarchy/plugins/*/; do
     [[ -f $dir/manifest.json ]] || continue
     id=$(jq -r '.id // empty' "$dir/manifest.json" 2>/dev/null) || continue
@@ -1377,7 +1436,11 @@ collect_plugins_json() {
     [[ -n $id && -n $url ]] || continue
     valid_id "$id" || continue
     valid_https "$url" || continue
-    jq -nc --arg id "$id" --arg url "$url" '$ARGS.named'
+    # The commit is what makes a shared plugin reference immutable; without one
+    # the entry is dropped rather than published as a moving branch.
+    sha=$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)
+    valid_sha "$sha" || continue
+    jq -nc --arg id "$id" --arg url "$url" --arg commit "$sha" '$ARGS.named'
   done | jq -s '.'
 }
 
@@ -1400,9 +1463,13 @@ cmd_share() {
   [[ -f $HOME/.local/state/omarchy/current/theme.name ]] && theme=$(<"$HOME/.local/state/omarchy/current/theme.name")
   theme="${theme//[[:space:]]/}"
   valid_theme "$theme" || theme=""
-  [[ -n $theme && -d $HOME/.config/omarchy/themes/$theme ]] &&
+  local theme_commit=""
+  if [[ -n $theme && -d $HOME/.config/omarchy/themes/$theme ]]; then
     theme_url=$(git -C "$HOME/.config/omarchy/themes/$theme" remote get-url origin 2>/dev/null || true)
+    theme_commit=$(git -C "$HOME/.config/omarchy/themes/$theme" rev-parse HEAD 2>/dev/null || true)
+  fi
   valid_https "$theme_url" || theme_url=""
+  valid_sha "$theme_commit" || theme_commit=""
 
   mkdir -p "$out"
   jq -n \
@@ -1419,11 +1486,12 @@ cmd_share() {
     --argjson webapps "$(collect_webapps_json)" \
     --arg themeName "$theme" \
     --arg themeUrl "$theme_url" \
+    --arg themeCommit "$theme_commit" \
     '{schemaVersion: $schemaVersion, kind: $kind, name: $name, author: $author,
       description: $description, createdAt: $createdAt, omarchy: $omarchy,
       packages: {native: $native, aur: $aur},
       plugins: $plugins, webapps: $webapps,
-      theme: {name: $themeName, url: $themeUrl}}' >"$out/profile.json"
+      theme: {name: $themeName, url: $themeUrl, commit: $themeCommit}}' >"$out/profile.json"
 
   local n_pkg n_aur n_plug n_web
   n_pkg=$(jq '.packages.native | length' "$out/profile.json")
@@ -1560,13 +1628,19 @@ cmd_apply() {
   n_aur=$(printf '%s' "$missing_aur" | grep -c . || true)
 
   local plugin_rows=() webapp_rows=() theme_name theme_url
-  local id url label
-  while IFS=$'\t' read -r id url; do
+  local id url label sha
+  while IFS=$'\t' read -r id url sha; do
     [[ -n $id ]] || continue
     valid_id "$id" && valid_https "$url" || continue
     [[ -d $HOME/.config/omarchy/plugins/$id ]] && continue
-    plugin_rows+=("$id"$'\t'"$url")
-  done < <(jq -r '.plugins[]? | [.id, .url] | @tsv' "$profile")
+    # A loadout points at someone else's repo. Installing its branch head means
+    # running whatever they push next, not what they shared.
+    if ! valid_sha "$sha"; then
+      if (( ALLOW_UNPINNED )); then sha=""
+      else step_warn apply "$id names no commit — skipped (pass --allow-unpinned to take the branch head)"; continue; fi
+    fi
+    plugin_rows+=("$id"$'\t'"$url"$'\t'"$sha")
+  done < <(jq -r '.plugins[]? | [.id, .url, (.commit // "")] | @tsv' "$profile")
 
   while IFS=$'\t' read -r label url id; do
     [[ -n $label ]] || continue
@@ -1578,6 +1652,7 @@ cmd_apply() {
 
   theme_name=$(jq -r '.theme.name // ""' "$profile"); valid_theme "$theme_name" || theme_name=""
   theme_url=$(jq -r '.theme.url // ""' "$profile");   valid_https "$theme_url"  || theme_url=""
+  local theme_sha; theme_sha=$(jq -r '.theme.commit // ""' "$profile"); valid_sha "$theme_sha" || theme_sha=""
 
   local current_theme=""
   [[ -f $HOME/.local/state/omarchy/current/theme.name ]] && current_theme=$(<"$HOME/.local/state/omarchy/current/theme.name")
@@ -1644,10 +1719,15 @@ cmd_apply() {
   local row
   for row in "${plugin_rows[@]:-}"; do
     [[ -n $row ]] || continue
-    IFS=$'\t' read -r id url <<<"$row"
-    omarchy plugin add "$url" --enable --yes >/dev/null 2>&1 &&
-      step_ok apply "plugin $id" ||
-      step_warn apply "could not add plugin $id"
+    IFS=$'\t' read -r id url sha <<<"$row"
+    if clone_pinned "$url" "$HOME/.config/omarchy/plugins/$id" "$sha" &&
+      omarchy plugin validate "$HOME/.config/omarchy/plugins/$id" >/dev/null 2>&1; then
+      omarchy-shell shell ping >/dev/null 2>&1 && omarchy plugin enable "$id" >/dev/null 2>&1 || true
+      step_ok apply "plugin $id"
+    else
+      rm -rf "$HOME/.config/omarchy/plugins/$id"
+      step_warn apply "could not install plugin $id"
+    fi
   done
 
   for row in "${webapp_rows[@]:-}"; do
@@ -1662,7 +1742,7 @@ cmd_apply() {
 
   if [[ -n $theme_name ]]; then
     if [[ ! -d $HOME/.config/omarchy/themes/$theme_name ]] && [[ -n $theme_url ]]; then
-      git clone -q --depth 1 -- "$theme_url" "$HOME/.config/omarchy/themes/$theme_name" 2>/dev/null || true
+      clone_pinned "$theme_url" "$HOME/.config/omarchy/themes/$theme_name" "$theme_sha" || true
     fi
     omarchy theme set "$theme_name" >/dev/null 2>&1 &&
       step_ok apply "theme $theme_name" ||
@@ -1720,6 +1800,7 @@ while (( $# > 0 )); do
     --porcelain) PORCELAIN=1; shift ;;
     --dry-run|-n) DRY_RUN=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
+    --allow-unpinned) ALLOW_UNPINNED=1; shift ;;
     --version) printf '%s\n' "$VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     --) shift; while (( $# > 0 )); do ARGS+=("$1"); shift; done ;;

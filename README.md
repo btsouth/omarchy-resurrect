@@ -101,7 +101,7 @@ picks up at the step it stopped on.
 | **Dotfiles** | a curated list under `$HOME` — shells, Hyprland, terminals, editors | rsync, with every replaced file kept as `*.resurrect-bak` |
 | **Omarchy** | `shell.json` bar layout, themes, hooks, extensions, branding, active theme | git themes re-cloned by URL, hand-made themes copied |
 | **Web apps** | the `.desktop` launchers made by `omarchy webapp`, plus icons | rebuilt in place |
-| **Plugins** | every shell plugin, by git remote and enabled state | `omarchy plugin add`, or a plain clone if the shell isn't up yet |
+| **Plugins** | every shell plugin: git remote, **exact commit**, enabled state | cloned and checked out at that commit, detached |
 | **Secrets** | *off by default* — a list you write yourself | `age`-encrypted; see [Secrets](#secrets) |
 
 It also records which **systemd user services** you have enabled and re-enables
@@ -326,6 +326,17 @@ web app URLs. There is no field that holds file contents and no field that holds
 a command, so there is nowhere to put one. Web apps are rebuilt from a name, a
 URL and an icon through `omarchy webapp install` rather than by copying a
 `.desktop` file, because a `.desktop` file *is* an `Exec` line.
+
+**Nothing is installed from a moving branch.** Backup records the exact commit
+each plugin and git theme was on, and restore checks that commit out detached.
+A loadout carries the same, so applying someone's setup installs the code they
+shared, not whatever they push tomorrow. An entry with no commit is skipped
+unless you pass `--allow-unpinned`.
+
+**Backup does not follow symlinks out of your home directory.** A link inside a
+captured path could otherwise pull in a file the exclude list was meant to keep
+out, under a different name. Anything skipped this way is listed in
+`report/symlinks-skipped.txt` rather than silently missing.
 
 **A vault is untrusted too.** `restore --from <git-url>` fetches one over the
 network, so everything read out of a vault gets the same treatment a shared
