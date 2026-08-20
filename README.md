@@ -559,6 +559,15 @@ rsync -a --exclude '.git/' ./ ~/.config/omarchy/plugins/tsouth89.resurrect/
 omarchy-restart-shell          # QML edits need a restart; hot reload can serve stale code
 ```
 
+That rsync leaves the installed checkout with modified files, and
+`omarchy plugin update` refuses to fast-forward over local changes. Put it back
+before updating:
+
+```bash
+git -C ~/.config/omarchy/plugins/tsouth89.resurrect checkout -- .
+omarchy plugin update tsouth89.resurrect
+```
+
 The CLI (`bin/ress`) is the whole engine and has no QML dependency — it runs
 from a TTY on a machine with no desktop. `Panel.qml` and `Service.qml` are a
 face on top of it, and every button is one subcommand with `--porcelain`.
