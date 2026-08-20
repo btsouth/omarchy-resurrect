@@ -83,8 +83,9 @@ the full path below.
 
 ```bash
 ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress link
+ress restore --dry-run            # packages: "already complete - nothing to install"
 ress status                       # counts should match the source machine
-ress diff --stock                 # should now report 0 packages to fetch
+ress diff --stock                 # "on this machine: all of them are already installed"
 pacman -Qq | wc -l                # package count in the same range
 ls ~/.local/share/applications/   # your web apps
 omarchy theme list                # your themes

@@ -51,7 +51,8 @@ Distance from a stock Omarchy install
 
   Omarchy ships                256 packages
   you have explicitly          166 packages
-  a restore would fetch        8 packages
+  a fresh Omarchy would fetch  8 packages
+  on this machine              all of them are already installed
 
   cursor-cli fuse2 gtkmm3 hyprpolkitagent mesa-utils opencode
   open-vm-tools stably-orca-bin

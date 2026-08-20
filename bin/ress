@@ -1323,7 +1323,25 @@ cmd_diff_stock() {
   printf '%sDistance from a stock Omarchy install%s\n\n' "$c_bold" "$c_reset"
   printf '  %-28s %s\n' "Omarchy ships" "$(plural "$n_stock" package)"
   printf '  %-28s %s\n' "you have explicitly" "$(plural "$n_mine" package)"
-  printf '  %-28s %s%s%s\n\n' "a restore would fetch" "$c_green" "$(plural "$n_extra" package)" "$c_reset"
+  printf '  %-28s %s%s%s\n' "a fresh Omarchy would fetch" "$c_green" "$(plural "$n_extra" package)" "$c_reset"
+
+  # Distance-from-stock is a property of the vault, not of this machine, so on a
+  # machine that already has these it read as though a restore still had work to
+  # do. Say what is actually missing here as well.
+  local here_missing=0 pkg
+  while IFS= read -r pkg; do
+    [[ -n $pkg ]] || continue
+    pacman -Q "$pkg" >/dev/null 2>&1 || here_missing=$((here_missing + 1))
+  done <<<"$extra"
+  if (( n_extra > 0 )); then
+    if (( here_missing == 0 )); then
+      printf '  %-28s %sall of them are already installed%s\n\n' "on this machine" "$c_green" "$c_reset"
+    else
+      printf '  %-28s %s still missing\n\n' "on this machine" "$(plural "$here_missing" package)"
+    fi
+  else
+    printf '\n'
+  fi
 
   if (( n_extra > 0 )); then
     printf '%s\n' "$extra" | fmt -w 72 | sed 's/^/  /'
