@@ -3194,7 +3194,7 @@ ${c_bold}ress${c_reset} $VERSION — capture an Omarchy machine, replay it onto 
       (--aur, --no-aur, --review-aur) and enable a systemd user service
       (--enable-units, --no-enable-units). --yes does not answer either.
 
-  ${c_bold}ress share${c_reset} [--name NAME] [--out DIR]
+  ${c_bold}ress share${c_reset} [--name NAME] [--description TEXT] [--out DIR]
       Export a loadout: the package, plugin, web app and theme list, with
       nothing from your home directory. Push it and share the URL.
 

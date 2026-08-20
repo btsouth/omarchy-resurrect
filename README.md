@@ -230,7 +230,7 @@ ress restore [--from URL] [--only LIST]     replay a vault, resumably
               [--skip LIST] [--dry-run] [--restart]
               [--aur|--no-aur|--review-aur]
               [--enable-units|--no-enable-units]
-ress share [--name NAME]                    export a shareable loadout
+ress share [--name NAME] [--description T]  export a shareable loadout
 ress apply <link> [--dry-run]               install someone else's loadout
 ress verify [--json]                        check this machine against the vault
 ress scan [--json]                          look for credentials in the vault
