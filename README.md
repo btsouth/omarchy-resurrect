@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/demo.gif" width="400" alt="Backing up a machine and exporting a shareable loadout, in real time">
+  <img src="docs/demo.gif" width="420" alt="Backing up a machine and exporting a shareable loadout, in real time">
   <br><em>A real backup: 166 packages, 27 config paths, 9 web apps — three seconds.</em>
 </p>
 
