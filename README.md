@@ -559,12 +559,16 @@ rsync -a --exclude '.git/' ./ ~/.config/omarchy/plugins/tsouth89.resurrect/
 omarchy-restart-shell          # QML edits need a restart; hot reload can serve stale code
 ```
 
-That rsync leaves the installed checkout with modified files, and
-`omarchy plugin update` refuses to fast-forward over local changes. Put it back
-before updating:
+That rsync leaves the installed checkout dirty, and `omarchy plugin update`
+refuses to fast-forward over it — in two separate ways. Modified tracked files
+block the merge, and so does an *untracked* file that a later commit adds, since
+git will not overwrite one. Put the checkout back before updating:
 
 ```bash
-git -C ~/.config/omarchy/plugins/tsouth89.resurrect checkout -- .
+cd ~/.config/omarchy/plugins/tsouth89.resurrect
+git checkout -- .                      # modified tracked files
+git clean -nd                          # look at what is untracked first
+git clean -fd                          # then remove it (.gitignore'd files are kept)
 omarchy plugin update tsouth89.resurrect
 ```
 
