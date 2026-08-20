@@ -338,7 +338,16 @@ captured path could otherwise pull in a file the exclude list was meant to keep
 out, under a different name. Anything skipped this way is listed in
 `report/symlinks-skipped.txt` rather than silently missing.
 
-**A vault is untrusted too.** `restore --from <git-url>` fetches one over the
+**Restoring a vault runs code, and no amount of validation changes that.**
+A machine restore installs the things that machine runs: Omarchy hooks that fire
+on update and boot, menu entries whose actions are shell commands, scripts into
+`~/.local/bin`, systemd user units. Resurrect validates every *name and path* a
+vault supplies, and it lists what will run before it asks — but it cannot
+validate file contents, and it does not pretend to. **Restore a vault only if
+you trust it as much as the machine it came from.** Applying a shared *loadout*
+is the safe direction: that format holds no file contents at all.
+
+**Names and paths from a vault are still checked.** `restore --from <git-url>` fetches one over the
 network, so everything read out of a vault gets the same treatment a shared
 loadout gets. Package names, plugin ids, theme names, unit names and labels must
 match strict patterns; remotes must be `https` (or an `ssh` git URL when

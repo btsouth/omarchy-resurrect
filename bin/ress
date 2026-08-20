@@ -883,6 +883,31 @@ restore_secrets() {
 
 # Packages first (everything else may need a binary), plugins before `omarchy`
 # so the restored shell.json is the last word on what is enabled.
+# Restoring a machine means restoring the things that machine runs. Names and
+# paths out of a vault are validated; file *contents* cannot be, so the honest
+# move is to count what will run and say so before asking.
+report_executable_content() {
+  local hooks=0 menus=0 scripts=0 units=0
+  [[ -d $VAULT/omarchy/hooks ]] &&
+    hooks=$(find "$VAULT/omarchy/hooks" -type f ! -name '*.sample' 2>/dev/null | wc -l)
+  [[ -d $VAULT/omarchy/extensions ]] &&
+    menus=$(find "$VAULT/omarchy/extensions" -type f 2>/dev/null | wc -l)
+  [[ -d $VAULT/home/.local/bin ]] &&
+    scripts=$(find "$VAULT/home/.local/bin" -type f 2>/dev/null | wc -l)
+  [[ -d $VAULT/home/.config/systemd ]] &&
+    units=$(find "$VAULT/home/.config/systemd" -type f -name '*.service' 2>/dev/null | wc -l)
+
+  (( hooks + menus + scripts + units == 0 )) && return 0
+
+  printf '\n%sThis vault installs things this machine will run:%s\n' "$c_bold" "$c_reset"
+  (( hooks > 0 ))   && printf '  %s — run automatically on update, boot and theme change\n' "$(plural "$hooks" "Omarchy hook")"
+  (( menus > 0 ))   && printf '  %s — menu entries are shell commands\n' "$(plural "$menus" "menu extension")"
+  (( scripts > 0 )) && printf '  %s into ~/.local/bin\n' "$(plural "$scripts" script)"
+  (( units > 0 ))   && printf '  %s\n' "$(plural "$units" "systemd user unit")"
+  printf '%sRestore only a vault you trust as much as the machine it came from.%s\n' "$c_dim" "$c_reset"
+  return 0
+}
+
 RESTORE_ORDER=(packages config plugins omarchy webapps secrets)
 
 cmd_restore() {
@@ -902,16 +927,16 @@ cmd_restore() {
   if [[ -n $from ]] && (( ! DRY_RUN )) && [[ -d $VAULT/.git || -e $VAULT ]]; then
     # Fetching replaces whatever vault is already here, which is a change in its
     # own right and used to happen before any prompt.
-    confirm "Replace the vault at $VAULT with the one at $(plain "$from")?" || die "cancelled"
+    confirm "Replace the vault at $VAULT with the one at $(plain "$(strip_credentials "$from")")?" || die "cancelled"
   fi
   if [[ -n $from ]]; then
     if [[ -d $VAULT/.git ]]; then
-      step_start clone "Updating vault from $from"
+      step_start clone "Updating vault from $(strip_credentials "$from")"
       git_vault remote set-url origin "$from" 2>/dev/null || git_vault remote add origin "$from"
       git_vault fetch -q --depth 1 origin && git_vault reset -q --hard FETCH_HEAD
       step_ok clone "vault updated"
     else
-      step_start clone "Cloning $from"
+      step_start clone "Cloning $(strip_credentials "$from")"
       rm -rf "$VAULT"; mkdir -p "$(dirname "$VAULT")"
       git clone -q --depth 1 -- "$from" "$VAULT" || die "could not clone $from"
       step_ok clone "cloned to $VAULT"
@@ -941,6 +966,8 @@ cmd_restore() {
   local origin; origin=$(plain "$(jq -r '.machine.hostname // "?"' "$VAULT/resurrect.json")")
   local created; created=$(plain "$(jq -r '.createdAt // "?"' "$VAULT/resurrect.json")")
 
+  report_executable_content
+
   if (( ! DRY_RUN )); then
     printf '%sResurrecting %s%s (backed up %s) onto %s.%s\n' \
       "$c_bold" "$origin" "$c_reset$c_dim" "$created" "$(hostname)" "$c_reset"
@@ -948,7 +975,7 @@ cmd_restore() {
       die "cancelled"
     # A one-off `--vault` is a scratch restore, not a change of allegiance.
     if [[ -n ${pending_remote:-} && -z ${VAULT_OVERRIDE:-} ]]; then
-      CFG[REMOTE]="$pending_remote"
+      CFG[REMOTE]=$(strip_credentials "$pending_remote")
       save_config
     fi
   fi
@@ -1397,6 +1424,15 @@ normalize_source() {
     */*)               src="github.com/$src" ;;
   esac
   printf 'https://%s' "$src"
+}
+
+# A URL may carry a token (https://TOKEN@host/...). That is fine to use once and
+# wrong to write into a config file, so it is stripped before anything is saved
+# and before anything is printed.
+strip_credentials() {
+  local url="$1"
+  [[ $url =~ ^([a-z]+://)([^/@]*@)(.*)$ ]] && url="${BASH_REMATCH[1]}${BASH_REMATCH[3]}"
+  printf '%s' "$url"
 }
 
 # The paste-me form of a repo URL, for `ress share`.
