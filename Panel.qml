@@ -298,6 +298,7 @@ Panel {
               color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
 
               Rectangle {
+                id: progressFill
                 height: parent.height
                 radius: parent.radius
                 color: root.accent
@@ -310,7 +311,9 @@ Panel {
                   id: sweep
                   running: engine.busy && engine.currentProgress < 0
                   loops: Animation.Infinite
-                  onRunningChanged: if (!running) sweep.target.x = 0
+                  // `target` is not set on a property value source, so reset
+                  // the item itself rather than reading it off the animation.
+                  onRunningChanged: if (!running) progressFill.x = 0
                   NumberAnimation { from: 0; to: panelFlick.width * 0.65; duration: 900; easing.type: Easing.InOutQuad }
                   NumberAnimation { from: panelFlick.width * 0.65; to: 0; duration: 900; easing.type: Easing.InOutQuad }
                 }
