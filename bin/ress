@@ -1645,14 +1645,25 @@ report_executable_content() {
 
   (( hooks + menus + scripts + units + autostart + plugins + git_themes == 0 )) && return 0
 
+  # Built as lines first because this has two audiences: a person, who gets a
+  # block with a heading, and --porcelain, which is a protocol and must not have
+  # prose written into it. Neither audience should be told less than the other.
+  local lines=()
+  (( hooks > 0 ))      && lines+=("$(plural "$hooks" "Omarchy hook") — run automatically on update, boot and theme change")
+  (( menus > 0 ))      && lines+=("$(plural "$menus" "menu extension") — menu entries are shell commands")
+  (( scripts > 0 ))    && lines+=("$(plural "$scripts" script) into ~/.local/bin")
+  (( units > 0 ))      && lines+=("$(plural "$units" "systemd user unit")")
+  (( autostart > 0 ))  && lines+=("$(plural "$autostart" "autostart entry" "autostart entries") — started automatically when you log in")
+  (( plugins > 0 ))    && lines+=("$(plural "$plugins" "shell plugin") — cloned from git and loaded into the shell")
+  (( git_themes > 0 )) && lines+=("$(plural "$git_themes" "git theme") — cloned from git, sourced on every theme change")
+
+  local line
+  if (( PORCELAIN )); then
+    for line in "${lines[@]}"; do emit "LOG|will run: $line"; done
+    return 0
+  fi
   printf '\n%sThis vault installs things this machine will run:%s\n' "$c_bold" "$c_reset"
-  (( hooks > 0 ))     && printf '  %s — run automatically on update, boot and theme change\n' "$(plural "$hooks" "Omarchy hook")"
-  (( menus > 0 ))     && printf '  %s — menu entries are shell commands\n' "$(plural "$menus" "menu extension")"
-  (( scripts > 0 ))   && printf '  %s into ~/.local/bin\n' "$(plural "$scripts" script)"
-  (( units > 0 ))     && printf '  %s\n' "$(plural "$units" "systemd user unit")"
-  (( autostart > 0 )) && printf '  %s — started automatically when you log in\n' "$(plural "$autostart" "autostart entry" "autostart entries")"
-  (( plugins > 0 ))   && printf '  %s — cloned from git and loaded into the shell\n' "$(plural "$plugins" "shell plugin")"
-  (( git_themes > 0 )) && printf '  %s — cloned from git, sourced on every theme change\n' "$(plural "$git_themes" "git theme")"
+  for line in "${lines[@]}"; do printf '  %s\n' "$line"; done
   printf '%sRestore only a vault you trust as much as the machine it came from.%s\n' "$c_dim" "$c_reset"
   return 0
 }
@@ -1703,6 +1714,13 @@ report_restore_preview() {
   fi
 
   (( ${#names[@]} + ${#aur_names[@]} + ${#plugin_ids[@]} == 0 )) && return 0
+
+  if (( PORCELAIN )); then
+    (( ${#names[@]} > 0 ))      && emit "LOG|will install ${#names[@]} from the Arch repos: ${names[*]}"
+    (( ${#aur_names[@]} > 0 ))  && emit "LOG|will build ${#aur_names[@]} from the AUR: ${aur_names[*]}"
+    (( ${#plugin_ids[@]} > 0 )) && emit "LOG|will clone ${#plugin_ids[@]} shell plugins: ${plugin_ids[*]}"
+    return 0
+  fi
 
   printf '\n%sThis restore will install:%s\n' "$c_bold" "$c_reset"
   if (( ${#names[@]} > 0 )); then
@@ -1824,10 +1842,15 @@ cmd_restore() {
   report_executable_content
 
   if (( ! DRY_RUN )); then
-    printf '%sRestoring %s%s (backed up %s) onto %s.%s\n' \
-      "$c_bold" "$origin" "$c_reset$c_dim" "$created" "$(hostname)" "$c_reset"
-    (( FIRST_CONTACT )) && printf '%sThis machine has not restored from this vault before.%s\n' \
-      "$c_dim" "$c_reset"
+    if (( PORCELAIN )); then
+      emit "LOG|restoring $origin (backed up $created) onto $(hostname)"
+      (( FIRST_CONTACT )) && emit "LOG|this machine has not restored from this vault before"
+    else
+      printf '%sRestoring %s%s (backed up %s) onto %s.%s\n' \
+        "$c_bold" "$origin" "$c_reset$c_dim" "$created" "$(hostname)" "$c_reset"
+      (( FIRST_CONTACT )) && printf '%sThis machine has not restored from this vault before.%s\n' \
+        "$c_dim" "$c_reset"
+    fi
     report_restore_preview
     # An unpinned clone is whatever upstream contains at the moment it runs. On
     # a vault this machine already backs up to, that is your own repository
@@ -1869,8 +1892,7 @@ cmd_restore() {
     fi
   done
 
-  if (( ! DRY_RUN )); then
-    have omarchy-restart-shell && omarchy-restart-shell >/dev/null 2>&1 &
+  if (( ! DRY_RUN )) && (( ! PORCELAIN )); then
     local elapsed=$((SECONDS - started))
     printf '\n'
     if (( RESTORE_FAILED )); then
@@ -1891,6 +1913,15 @@ cmd_restore() {
         [[ -n $entry ]] && printf '  · %s\n' "${entry#*|}"
       done
     fi
+  fi
+  if (( ! DRY_RUN )); then
+    have omarchy-restart-shell && omarchy-restart-shell >/dev/null 2>&1 &
+    # Deferred work is reported through the protocol too: it is the difference
+    # between "finished" and "finished, and here is what you still owe".
+    local entry
+    for entry in "${PARTIAL_STEPS[@]:-}"; do
+      [[ -n $entry ]] && emit "LOG|left for later: ${entry#*|}"
+    done
   fi
   emit "DONE|$( (( RESTORE_FAILED )) && echo partial || echo ok)|restore complete"
   return $RESTORE_FAILED
