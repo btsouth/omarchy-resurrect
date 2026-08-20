@@ -26,13 +26,20 @@ site/worker.js            the Workers alternative (not deployed)
 ## Deploy (Cloudflare Pages — recommended)
 
 ```bash
-npx wrangler pages project create ress --production-branch main
-npx wrangler pages deploy site/public --project-name ress
+npx wrangler pages deploy site/public --project-name omarchy-resurrect
+```
+
+The Pages project is named `omarchy-resurrect` (it serves `ress.sh`). Create only if
+you are standing up a new project:
+
+```bash
+npx wrangler pages project create omarchy-resurrect --production-branch main
 ```
 
 Both commands need `CLOUDFLARE_API_TOKEN` (Account → Cloudflare Pages → Edit)
-and `CLOUDFLARE_ACCOUNT_ID` in the environment. The account ID is only needed
-because a Pages-scoped token cannot enumerate accounts by itself.
+and `CLOUDFLARE_ACCOUNT_ID` in the environment when not already logged in via
+`wrangler login`. The account ID is only needed because a Pages-scoped token
+cannot enumerate accounts by itself.
 
 Then point the `ress.sh` apex at the Pages project in the Cloudflare dashboard.
 `_redirects` does the routing; there is no code to run.
