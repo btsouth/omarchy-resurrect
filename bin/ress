@@ -181,7 +181,11 @@ take_lock() {
   private_dir "$STATE_DIR"
   exec 9>"$STATE_DIR/lock"
   flock -n 9 || die "another ress operation is already running"
-  date -u +%s >"$STATE_DIR/running"
+  # The lock is still taken for a dry run — it clones into a temp directory and
+  # reads the vault, and two of those at once is still two — but the marker the
+  # bar reads as "busy" is not written, because nothing is happening to this
+  # machine.
+  (( DRY_RUN )) || date -u +%s >"$STATE_DIR/running"
 }
 
 # "1 plugins" reads like a bug even when the number is right.
@@ -958,8 +962,16 @@ unit_installed() {
 # reading — and it comes out of a file the vault chose, so it is stripped of
 # anything that could repaint the terminal and clipped to one line.
 unit_exec() {
-  local unit="$1" file="$HOME/.config/systemd/user/$unit" line=""
-  [[ -f $file ]] && line=$(sed -n 's/^ExecStart=//p' "$file" | head -1)
+  local unit="$1" line=""
+  # The vault's copy first: during a dry run it is the only one there is, and
+  # after a restore it is the one that landed. Then whatever is installed, for
+  # a unit that came from a package rather than from the vault.
+  local from_vault="$VAULT/home/.config/systemd/user/$unit"
+  local installed="$HOME/.config/systemd/user/$unit"
+  local file=""
+  [[ -f $from_vault ]] && file="$from_vault"
+  [[ -z $file && -f $installed ]] && file="$installed"
+  [[ -n $file ]] && line=$(sed -n 's/^ExecStart=//p' "$file" | head -1)
   [[ -n $line ]] || line=$(systemctl --user show -p ExecStart --value -- "$unit" 2>/dev/null | head -1)
   line=$(plain "$line")
   [[ ${#line} -gt 64 ]] && line="${line:0:61}..."
@@ -1062,13 +1074,110 @@ units_decision_kind() {
   esac
 }
 
+# What a restore would do with one row of themes.tsv, as an action word and a
+# reason. Both the dry run and the restore itself decide through this, so a
+# plan cannot promise something the restore then refuses — the rule that keeps
+# the two honest is that there is only one copy of it.
+#
+#   clone <url> at <pin>   fetch it, pinned or at the branch head
+#   copy                   the theme travelled as files in the vault
+#   present                already on this machine; left alone
+#   skip <why>             a decision: unpinned, and --allow-unpinned was not given
+#   refuse <why>           the vault said something that will not be repeated
+#   missing                named, but neither a remote nor files to install from
+theme_action() {
+  local name="$1" url="$2" sha="$3"
+  local dest="$HOME/.config/omarchy/themes"
+  if ! valid_theme "$name"; then printf 'refuse\tunsafe theme name\n'; return 0; fi
+  if [[ -n $url ]] && ! valid_git_remote "$url"; then printf 'refuse\tunsafe remote\n'; return 0; fi
+  if [[ -d $dest/$name ]]; then printf 'present\talready here\n'; return 0; fi
+  if [[ -n $url ]]; then
+    if [[ -n $sha ]] && ! valid_sha "$sha"; then printf 'refuse\tmalformed commit\n'; return 0; fi
+    # A theme is a git checkout the shell sources on every reload, so it gets
+    # the same rule a plugin gets: without a recorded commit the clone is
+    # whatever upstream contains now, not what was captured.
+    if [[ -z $sha ]]; then
+      (( ALLOW_UNPINNED )) || { printf 'skip\tno recorded commit — pass --allow-unpinned to take the branch head\n'; return 0; }
+      printf 'clone\t%s at branch head\n' "$url"; return 0
+    fi
+    printf 'clone\t%s pinned to %s\n' "$url" "${sha:0:12}"
+    return 0
+  fi
+  [[ -d $VAULT/omarchy/themes/$name ]] && { printf 'copy\tfrom files in the vault\n'; return 0; }
+  printf 'missing\tno remote and no files in the vault\n'
+}
+
+# The dry run for this category used to be the word "dry run". Everything below
+# is what a plan has to say to be worth reading: which themes arrive and from
+# where, that the bar layout is replaced and by what, and which theme ends up
+# active.
+preview_omarchy() {
+  local dir="$VAULT/omarchy" dest="$HOME/.config/omarchy"
+
+  local item n
+  for item in branding defaults extensions hooks themed; do
+    [[ -d $dir/$item ]] || continue
+    n=$(find "$dir/$item" -type f 2>/dev/null | wc -l)
+    (( n > 0 )) || continue
+    case "$item" in
+      hooks)      printf '    %-12s %s %s(run on update, boot and theme change)%s\n' "$item" "$(plural "$n" file)" "$c_yellow" "$c_reset" ;;
+      extensions) printf '    %-12s %s %s(menu entries are shell commands)%s\n' "$item" "$(plural "$n" file)" "$c_yellow" "$c_reset" ;;
+      *)          printf '    %-12s %s\n' "$item" "$(plural "$n" file)" ;;
+    esac
+  done
+
+  if [[ -f $dir/themes.tsv ]]; then
+    local name url tsha action detail
+    while IFS=$'\037' read -r name url tsha; do
+      [[ -n $name ]] || continue
+      IFS=$'\t' read -r action detail < <(theme_action "$name" "$url" "$tsha")
+      case "$action" in
+        clone|copy) printf '    %-12s %-22s %s%s%s\n' theme "$(plain "$name")" "$c_dim" "$(plain "$detail")" "$c_reset" ;;
+        present)    printf '    %-12s %-22s %s%s%s\n' theme "$(plain "$name")" "$c_dim" "$detail" "$c_reset" ;;
+        *)          printf '    %-12s %-22s %s%s%s\n' theme "$(plain "$name")" "$c_yellow" "$detail" "$c_reset" ;;
+      esac
+    done < <(tr '\t' '\037' <"$dir/themes.tsv")
+  fi
+
+  if [[ -f $dir/shell.json ]]; then
+    local widgets=""
+    widgets=$(jq -r '[.bar.layout // {} | .[]? | .[]? | .id] | join(", ")' "$dir/shell.json" 2>/dev/null || true)
+    if [[ -n $widgets ]]; then
+      printf '    %-12s %s\n' "bar layout" "$(plain "$widgets")"
+    else
+      printf '    %-12s %s\n' "bar layout" "replaced"
+    fi
+    [[ -f $dest/shell.json ]] &&
+      printf '    %-12s %syours is kept as shell.json%s%s\n' "" "$c_dim" "$BAK_SUFFIX" "$c_reset"
+  fi
+
+  if [[ -f $dir/theme.name ]]; then
+    local want current=""
+    want=$(<"$dir/theme.name"); want="${want//[[:space:]]/}"
+    [[ -f $HOME/.local/state/omarchy/current/theme.name ]] &&
+      { current=$(<"$HOME/.local/state/omarchy/current/theme.name"); current="${current//[[:space:]]/}"; }
+    if ! valid_theme "$want"; then
+      printf '    %-12s %sunsafe theme name — refused%s\n' "active theme" "$c_yellow" "$c_reset"
+    elif [[ $want == "$current" ]]; then
+      printf '    %-12s %s %s(already active)%s\n' "active theme" "$(plain "$want")" "$c_dim" "$c_reset"
+    else
+      printf '    %-12s %s → %s\n' "active theme" "${current:-none}" "$(plain "$want")"
+    fi
+  fi
+  return 0
+}
+
 restore_omarchy() {
   local dir="$VAULT/omarchy"
   [[ -d $dir ]] || { step_skip omarchy "not in this vault"; return 0; }
   local dest="$HOME/.config/omarchy"
+  if (( DRY_RUN )); then
+    step_start omarchy "Omarchy state"
+    preview_omarchy
+    return 0
+  fi
   mkdir -p "$dest/themes"
   step_start omarchy "Restoring Omarchy state"
-  (( DRY_RUN )) && { step_skip omarchy "dry run"; return 0; }
 
   local item
   for item in branding defaults extensions hooks themed; do
@@ -1078,40 +1187,28 @@ restore_omarchy() {
 
   # Themes before shell.json: the shell reads the active theme on reload, and
   # pointing it at a theme that is not on disk yet gives you a grey desktop.
-  local name url installed=0
+  local name url tsha action detail installed=0
   if [[ -f $dir/themes.tsv ]]; then
     while IFS=$'\037' read -r name url tsha; do
       [[ -n $name ]] || continue
-      if ! valid_theme "$name"; then
-        step_warn omarchy "refused unsafe theme name from this vault"
-        continue
-      fi
-      if [[ -n $url ]] && ! valid_git_remote "$url"; then
-        step_warn omarchy "theme $name has an unsafe remote — refused"
-        continue
-      fi
-      [[ -d $dest/themes/$name ]] && continue
-      if [[ -n $url ]]; then
-        if [[ -n $tsha ]] && ! valid_sha "$tsha"; then
-          step_warn omarchy "theme $name has a malformed commit — refused"
-          continue
-        fi
-        # A theme is a git checkout the shell sources on every reload, so it
-        # gets the same rule a plugin gets: without a recorded commit the clone
-        # is whatever upstream contains now, not what was captured.
-        if [[ -z $tsha ]] && (( ! ALLOW_UNPINNED )); then
-          step_warn omarchy "theme $name has no recorded commit — skipped (pass --allow-unpinned to take the branch head)"
-          continue
-        fi
-        if clone_pinned "$url" "$dest/themes/$name" "$tsha"; then
+      IFS=$'\t' read -r action detail < <(theme_action "$name" "$url" "$tsha")
+      case "$action" in
+        present) continue ;;
+        refuse)  step_warn omarchy "theme $(plain "$name"): $detail — refused"; continue ;;
+        skip)    step_warn omarchy "theme $(plain "$name"): $detail"; continue ;;
+        missing) step_warn omarchy "theme $(plain "$name"): $detail"; continue ;;
+        clone)
+          if clone_pinned "$url" "$dest/themes/$name" "$tsha"; then
+            installed=$((installed + 1))
+          else
+            step_warn omarchy "could not clone theme $(plain "$name") from $url"
+          fi
+          ;;
+        copy)
+          rsync -a --safe-links -- "$dir/themes/$name/" "$dest/themes/$name/"
           installed=$((installed + 1))
-        else
-          step_warn omarchy "could not clone theme $name from $url"
-        fi
-      elif [[ -d $dir/themes/$name ]]; then
-        rsync -a --safe-links -- "$dir/themes/$name/" "$dest/themes/$name/"
-        installed=$((installed + 1))
-      fi
+          ;;
+      esac
     done < <(tr '\t' '\037' <"$dir/themes.tsv")
   fi
   (( installed > 0 )) && step_ok omarchy "$installed themes installed"
@@ -1171,7 +1268,20 @@ restore_webapps() {
   (( refused == 0 )) || step_warn webapps "refused $refused launcher(s) that are not a plain omarchy-launch-webapp <url>"
 
   if (( DRY_RUN )); then
-    printf '%s\n' "${rows[@]:-}" | awk -F'\t' 'NF { printf "    %-32s %s\n", $1, $2 }'
+    if (( ${#rows[@]} == 0 )); then
+      note "nothing here can be rebuilt"
+      return 0
+    fi
+    local row name url icon
+    for row in "${rows[@]}"; do
+      IFS=$'\t' read -r name url icon <<<"$row"
+      if [[ -f $HOME/.local/share/applications/$name.desktop ]]; then
+        printf '    %-32s %s %s(replaces yours, kept as *%s)%s\n' "$name" "$url" "$c_dim" "$BAK_SUFFIX" "$c_reset"
+      else
+        printf '    %-32s %s\n' "$name" "$url"
+      fi
+    done
+    note "each one is rebuilt by \`omarchy webapp install\` from a name, a URL and an icon — never by copying its .desktop file"
     return 0
   fi
   if (( ${#rows[@]} > 0 )) && ! have omarchy; then
@@ -1285,7 +1395,14 @@ restore_secrets() {
     step_warn secrets "age is not installed — run: sudo pacman -S age, then: ress restore --only secrets"
     return 0
   fi
-  if (( DRY_RUN )); then step_skip secrets "dry run"; return 0; fi
+  if (( DRY_RUN )); then
+    # There is nothing honest to list here: the archive is encrypted, and what
+    # is in it is not knowable without the passphrase. Say that, and say where
+    # it lands.
+    local size; size=$(du -h "$blob" 2>/dev/null | cut -f1)
+    step_skip secrets "an encrypted archive (${size:-?}) — its contents are only readable after you decrypt it, into \$HOME with 0600 permissions"
+    return 0
+  fi
   if [[ ! -t 0 ]]; then
     step_skip secrets "needs a terminal — run: ress restore --only secrets"
     return 0
@@ -1524,8 +1641,10 @@ cmd_restore() {
 
   private_dir "$STATE_DIR"
   RESTORE_STATE="$STATE_DIR/restore.state"
-  (( restart )) && rm -f "$RESTORE_STATE"
-  touch "$RESTORE_STATE"
+  if (( ! DRY_RUN )); then
+    (( restart )) && rm -f "$RESTORE_STATE"
+    touch "$RESTORE_STATE"
+  fi
 
   local origin; origin=$(plain "$(jq -r '.machine.hostname // "?"' "$manifest")")
   local created; created=$(plain "$(jq -r '.createdAt // "?"' "$manifest")")
