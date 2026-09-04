@@ -22,8 +22,8 @@ cp -a ~/.local/share/ress/vault /path/to/shared/ress-vault
 
 ```bash
 gh auth setup-git                              # lets git push over https
-gh repo create tsouth89/omarchy-vault --private
-ress set REMOTE=https://github.com/tsouth89/omarchy-vault.git
+gh repo create btsouth/omarchy-vault --private
+ress set REMOTE=https://github.com/btsouth/omarchy-vault.git
 ress backup --push
 ```
 
@@ -56,7 +56,7 @@ Omarchy install itself — the true bare-metal-to-desktop number.
 On the fresh machine, from a terminal. Two commands, no pipe into a shell:
 
 ```bash
-omarchy plugin add https://github.com/tsouth89/omarchy-resurrect --yes
+omarchy plugin add https://github.com/btsouth/omarchy-resurrect --yes
 
 time ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress restore \
   --vault /path/to/shared/ress-vault --yes --aur --enable-units
@@ -66,7 +66,7 @@ With a git remote instead, swap the second line for:
 
 ```bash
 time ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress restore \
-  --from https://github.com/tsouth89/omarchy-vault --yes --aur --enable-units
+  --from https://github.com/btsouth/omarchy-vault --yes --aur --enable-units
 ```
 
 It will ask for your password once, for `pacman`.

@@ -68,7 +68,7 @@ seconds. That is the whole idea.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/tsouth89/omarchy-resurrect --enable
+omarchy plugin add https://github.com/btsouth/omarchy-resurrect --enable
 ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress link   # puts `ress` on your PATH
 ress init --remote https://github.com/you/my-omarchy-vault.git   # optional
 ress backup
@@ -85,7 +85,7 @@ Omarchy's own installer does the fetching, and it validates the manifest and
 warns you before it clones anything:
 
 ```bash
-omarchy plugin add https://github.com/tsouth89/omarchy-resurrect --yes
+omarchy plugin add https://github.com/btsouth/omarchy-resurrect --yes
 ~/.config/omarchy/plugins/tsouth89.resurrect/bin/ress restore --from https://github.com/you/my-omarchy-vault
 ```
 
@@ -552,7 +552,7 @@ command.
 ## Development
 
 ```bash
-git clone https://github.com/tsouth89/omarchy-resurrect
+git clone https://github.com/btsouth/omarchy-resurrect
 cd omarchy-resurrect
 omarchy plugin validate .
 rsync -a --exclude '.git/' ./ ~/.config/omarchy/plugins/tsouth89.resurrect/

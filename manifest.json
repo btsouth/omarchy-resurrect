@@ -6,7 +6,7 @@
   "author": "Tyler South",
   "license": "MIT",
   "description": "Capture this machine \u2014 packages, dotfiles, themes, web apps, plugins \u2014 and replay it onto a fresh Omarchy install. Share the loadout as a link.",
-  "homepage": "https://github.com/tsouth89/omarchy-resurrect",
+  "homepage": "https://github.com/btsouth/omarchy-resurrect",
   "kinds": [
     "bar-widget",
     "service"

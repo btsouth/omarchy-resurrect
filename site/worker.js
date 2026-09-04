@@ -4,7 +4,7 @@
 // No storage, no state, no request body is ever read. A profile is hosted by
 // GitHub and nowhere else; this only shortens the line that points at it.
 
-const REPO = "https://github.com/tsouth89/omarchy-resurrect";
+const REPO = "https://github.com/btsouth/omarchy-resurrect";
 
 // Deliberately narrow: GitHub's own character set for owners and repos, and
 // nothing that could turn a path into a different host.
