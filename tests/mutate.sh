@@ -159,6 +159,12 @@ run_mutation first-contact-never \
   'same_remote "$from" "$(normalize_source "${CFG[REMOTE]:-}")" || FIRST_CONTACT=1' \
   ':'
 
+run_mutation source-scheme-ignored \
+  '  case "$src" in
+    http://*|https://*) ;;  # the https forms the shorthands below are written for' \
+  '  case "" in
+    http://*|https://*) ;;  # the guard can never match, so nothing is passed through'
+
 # ---- untrusted input ------------------------------------------------------
 
 run_mutation schema-unvalidated \
