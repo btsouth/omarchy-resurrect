@@ -2759,6 +2759,18 @@ normalize_source() {
   local src="$1"
   [[ -e $src ]] && { printf '%s' "$src"; return 0; }
 
+  # A source that already names its transport reaches git as given. git
+  # understands ssh://, git:// and the scp form git@host:path, and the https
+  # prepend at the end of this function would otherwise turn any of them into
+  # https://ssh://host/... (which is what `restore --from ssh://...` used to
+  # hand the clone). valid_git_remote accepts those spellings for your own
+  # vault, so they have to survive this far. A local path is handled above and
+  # file:// is still refused, by valid_git_remote.
+  case "$src" in
+    http://*|https://*) ;;  # the https forms the shorthands below are written for
+    *://*|*@*:*) printf '%s' "$src"; return 0 ;;
+  esac
+
   src="${src#http://}"
   src="${src#https://}"
   src="${src#www.}"

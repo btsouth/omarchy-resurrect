@@ -5,6 +5,9 @@
 # as https://github.com/example/<name>. Only the verbs that actually talk to a
 # remote get the rewrite, injected as `-c url.<local>.insteadOf=<https>`, so
 # `git remote get-url` still reports the https URL the vault should record.
+# The same upstreams also answer to ssh://git@ssh.example/<name> and to the scp
+# form git@ssh.example:<name>, so a case can prove that a source naming its own
+# transport is handed to git exactly as written.
 # Rewriting globally would have capture record a /tmp path and restore then
 # refuse it as an unsafe remote — an artefact of the test, not of ress.
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
@@ -33,7 +36,9 @@ inject=()
 case "$verb" in
   clone|fetch|pull|push|ls-remote)
     log_call "git $*"
-    inject=(-c "url.$(state)/remotes/.insteadOf=https://github.com/example/")
+    inject=(-c "url.$(state)/remotes/.insteadOf=https://github.com/example/"
+            -c "url.$(state)/remotes/.insteadOf=ssh://git@ssh.example/"
+            -c "url.$(state)/remotes/.insteadOf=git@ssh.example:")
     ;;
 esac
 
