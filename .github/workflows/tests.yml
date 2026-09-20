@@ -1,0 +1,35 @@
+name: suite
+
+# The gates the repository asks you to run by hand, run on every push. Nothing
+# here needs an Omarchy machine: the suite is a bash script with test doubles on
+# PATH, and its QML half skips itself when qmllint is not installed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: What the suite needs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq rsync
+
+      - name: Every case
+        run: ./tests/run.sh
+
+      # The manifest is what the shell and the marketplace read, and a broken one
+      # is a plugin that vanishes from the bar without an error anyone sees.
+      - name: Manifest
+        run: jq -e '.id and .version and .schemaVersion and .kinds and .entryPoints' manifest.json >/dev/null
+
+      # Said on its own as well, because Model.js is the one part of the QML half
+      # that runs anywhere: a skip there is a silent hole rather than a warning.
+      - name: Model.js
+        run: node tests/model-test.js

@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 SCHEMA=1
 
 # The vault's manifest and the suffix restore leaves on anything it replaces.

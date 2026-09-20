@@ -582,6 +582,13 @@ face on top of it, and every button is one subcommand with `--porcelain`.
 ./tests/mutate.sh           # break each behaviour, check a test notices
 ```
 
+Every push and pull request runs the suite on GitHub Actions
+(`.github/workflows/tests.yml`), along with the manifest check and `Model.js` on
+its own. The mutation sweep is weekly (`.github/workflows/mutations.yml`),
+because it takes tens of minutes: it runs the whole suite once per mutation.
+
+Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
 [docs/TESTING.md](docs/TESTING.md) covers the whole strategy, including the
 real-tools checks worth running before a release and the six things only a
 clean VM can tell you.

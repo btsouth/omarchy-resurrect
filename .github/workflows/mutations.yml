@@ -1,0 +1,29 @@
+name: mutations
+
+# The suite says the tests agree with the code. It does not say they would notice
+# if the code were wrong, and that is what this breaks one behaviour at a time to
+# check. It takes tens of minutes — every mutation runs the whole suite — so it
+# runs weekly rather than on every push.
+
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+jobs:
+  mutate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: What the suite needs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq rsync
+
+      # A mutation counts as caught when the suite goes red, so a case that is
+      # already red would make every mutation look caught. The runner checks the
+      # baseline first and refuses to report when it does not pass.
+      - name: Break one behaviour at a time
+        run: ./tests/mutate.sh
