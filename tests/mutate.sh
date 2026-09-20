@@ -226,6 +226,21 @@ run_mutation verify-lists-split-on-spaces \
   'list_join() { local IFS=$'"'"'\037'"'"'; printf '"'"'%s'"'"' "$*"; }' \
   'list_join() { printf '"'"'%s'"'"' "$*"; }'
 
+# ---- remotes a restore will not take --------------------------------------
+
+run_mutation plugin-remote-unchecked \
+  '    elif ! valid_git_remote "$url"; then' \
+  '    elif false; then'
+
+run_mutation plugin-verify-counts-uncloneable \
+  '      if [[ -z $purl ]] || ! valid_git_remote "$purl"; then' \
+  '      if [[ -z $purl ]]; then'
+
+run_mutation theme-remote-unchecked \
+  '      valid_git_remote "$url" ||
+        step_warn omarchy "theme $name has a remote a restore will not clone ($(plain "$url")) — it will travel as nothing at all"' \
+  '      :'
+
 # ---- settings and capture -------------------------------------------------
 
 run_mutation autostart-always \
