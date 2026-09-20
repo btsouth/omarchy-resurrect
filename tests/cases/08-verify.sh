@@ -74,11 +74,14 @@ assert_fails "verify notices what went away"
 assert_output "acme.widget"
 assert_output "ripgrep"
 
-# A dotfile that changed since the backup counts as not matching.
+# A dotfile that changed since the backup counts as not matching. The config
+# entry is a sentence rather than a list of names: it does not name the files,
+# and the JSON carries it whole.
 rm -rf "$HOME/.config/omarchy/plugins"
 printf 'edited since the backup\n' >"$HOME/.bashrc"
 ress --vault "$VAULT" verify --json
-assert_equals "$(jq -r '.categories.config.missing[0]' <<<"$OUT")" "1" "one dotfile differs"
+assert_equals "$(jq -r '.categories.config.missing[0]' <<<"$OUT")" "1 differ from the vault" \
+  "one dotfile differs"
 
 # ---- 4. a restore that declined the AUR is honestly incomplete ------------
 

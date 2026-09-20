@@ -433,19 +433,57 @@ capture_omarchy() {
 }
 
 # Omarchy web apps are .desktop files whose Exec runs omarchy-launch-webapp.
-# That signature is what separates the six you made from the two hundred your
+# That signature is what separates the ones you made from the two hundred your
 # package manager installed.
+#
+# Only the first Exec line is the launcher. A second one is a Desktop Action:
+# another command the first line does not account for.
+launcher_exec() { sed -n 's/^Exec=//p' "$1" | head -1; }
+
+# Byte-identical to a launcher the package ships, so it is not this machine's
+# state. Omarchy keeps its own in $OMARCHY_DIR/applications, a fresh install has
+# them already, and capturing one puts a copy in ~/.local/share/applications on
+# the far side that then shadows the package-owned file for good.
+package_owned_launcher() {
+  local path="$1" name="$2" shipped
+  for shipped in "$OMARCHY_DIR/applications/$name" "/usr/share/applications/$name"; do
+    [[ -f $shipped ]] && cmp -s -- "$path" "$shipped" && return 0
+  done
+  return 1
+}
+
+# Whether a launcher can come back at all: exactly one Exec line, and that line
+# parses as a launcher URL with optional flags. A restore refuses anything else,
+# so restore, verify and the loadout export ask this one question rather than
+# three versions of it. They used to disagree: verify counted a launcher a
+# restore would refuse, and the export published one.
+launcher_travels() {
+  [[ -f $1 ]] || return 1
+  # A second Exec= line is a Desktop Action: a command the first line does not
+  # account for, and one this cannot rebuild.
+  [[ $(grep -c '^Exec=' "$1" 2>/dev/null || true) == 1 ]] || return 1
+  webapp_parts "$(launcher_exec "$1")" >/dev/null
+}
+
 capture_webapps() {
   local out="$VAULT/webapps"
   rm -rf "$out"; mkdir -p "$out/apps" "$out/icons"
   step_start webapps "Finding web apps"
 
-  local n=0 desktop icon
+  local n=0 stock=0 desktop icon name
+  local unrebuildable=()
   for desktop in "$HOME"/.local/share/applications/*.desktop; do
     [[ -f $desktop ]] || continue
     grep -q "omarchy-launch-webapp\|omarchy-launch-or-focus-webapp" "$desktop" || continue
+    name=$(basename "$desktop")
+    if package_owned_launcher "$desktop" "$name"; then stock=$((stock + 1)); continue; fi
     cp "$desktop" "$out/apps/"
     n=$((n + 1))
+    # The launcher is recorded whatever its Exec line says: the vault is also a
+    # record of what was here. Whether a restore can rebuild it is a separate
+    # question, answered by the same rule the restore itself uses, and it is
+    # worth answering now rather than on the machine that cannot fix it.
+    launcher_travels "$desktop" || unrebuildable+=("${name%.desktop}")
     icon=$(sed -n 's/^Icon=//p' "$desktop" | head -1)
     [[ -n $icon ]] || continue
     local found
@@ -455,6 +493,10 @@ capture_webapps() {
   done
   CAPTURED_WEBAPPS=$n
   step_ok webapps "$(plural "$n" "web app")"
+  (( stock == 0 )) ||
+    note "$stock launcher(s) Omarchy ships were left out — a fresh install has them already"
+  (( ${#unrebuildable[@]} == 0 )) || step_warn webapps \
+    "$(plural "${#unrebuildable[@]}" "launcher") a restore cannot re-create (not a launcher URL with optional flags): ${unrebuildable[*]}"
   return 0
 }
 
@@ -1425,48 +1467,45 @@ restore_webapps() {
   step_start webapps "Restoring $n web apps"
 
   # A .desktop file *is* an Exec line, so none of them are copied. Each launcher
-  # is read for a name, a URL and an icon name and rebuilt by the real installer
-  # — the same path `ress apply` takes for a stranger's loadout, and for the same
-  # reason: a vault fetched over the network chose this file's contents.
-  local rows=() desktop exec_line execs name url icon refused=0
+  # is read for a name, a URL, an icon and any browser flags, and rebuilt by the
+  # real installer — the same path `ress apply` takes for a stranger's loadout,
+  # and for the same reason: a vault fetched over the network chose this file's
+  # contents. The launcher line handed back is assembled from the pieces that
+  # passed validation, never from the captured text.
+  local rows=() desktop exec_line name url icon parts launcher flags
+  local refused=()
   for desktop in "$dir"/apps/*.desktop; do
     [[ -f $desktop ]] || continue
-    # A second Exec= line is a Desktop Action: a command the first line does not
-    # account for, and one this cannot rebuild.
-    execs=$(grep -c '^Exec=' "$desktop" 2>/dev/null || true)
-    if [[ $execs != 1 ]]; then
-      refused=$((refused + 1)); continue
-    fi
-    exec_line=$(sed -n 's/^Exec=//p' "$desktop" | head -1)
-    url=""
-    case "$exec_line" in
-      "omarchy-launch-webapp "*)          url="${exec_line#omarchy-launch-webapp }" ;;
-      "omarchy-launch-or-focus-webapp "*) url="${exec_line#omarchy-launch-or-focus-webapp }" ;;
-    esac
     name=$(sed -n 's/^Name=//p' "$desktop" | head -1)
+    [[ -n $name ]] || name=$(basename "$desktop" .desktop)
+    if ! launcher_travels "$desktop"; then refused+=("$(plain "$name")"); continue; fi
+    exec_line=$(launcher_exec "$desktop")
+    parts=$(webapp_parts "$exec_line") || { refused+=("$(plain "$name")"); continue; }
+    IFS=$'\t' read -r launcher url flags <<<"$parts"
+    # The URL, the flags and the launcher form were just checked; the label
+    # decides a filename, and the installer refuses a name with a slash in it.
+    if ! valid_label "$name"; then refused+=("$(plain "$name")"); continue; fi
     icon=$(sed -n 's/^Icon=//p' "$desktop" | head -1)
-    # `valid_https` admits no whitespace, which is also what rules out a second
-    # argument smuggled in after the URL.
-    if ! valid_https "$url" || ! valid_label "$name"; then
-      refused=$((refused + 1)); continue
-    fi
     valid_icon "$icon" || icon=""
-    rows+=("$name"$'\t'"$url"$'\t'"$icon")
+    rows+=("$launcher"$'\t'"$name"$'\t'"$url"$'\t'"$icon"$'\t'"$flags")
   done
-  (( refused == 0 )) || step_warn webapps "refused $refused launcher(s) that are not a plain omarchy-launch-webapp <url>"
+  (( ${#refused[@]} == 0 )) || step_warn webapps \
+    "$(plural "${#refused[@]}" "launcher") refused — not a launcher URL with optional flags: ${refused[*]}"
 
   if (( DRY_RUN )); then
     if (( ${#rows[@]} == 0 )); then
       note "nothing here can be rebuilt"
       return 0
     fi
-    local row name url icon
+    local row launcher rname shown
     for row in "${rows[@]}"; do
-      IFS=$'\t' read -r name url icon <<<"$row"
-      if [[ -f $HOME/.local/share/applications/$name.desktop ]]; then
-        printf '    %-32s %s %s(replaces yours, kept as *%s)%s\n' "$name" "$url" "$c_dim" "$BAK_SUFFIX" "$c_reset"
+      IFS=$'\t' read -r launcher rname url icon flags <<<"$row"
+      shown="$url${flags:+ $flags}"
+      [[ $launcher == omarchy-launch-webapp ]] || shown="$shown (via ${launcher#omarchy-})"
+      if [[ -f $HOME/.local/share/applications/$rname.desktop ]]; then
+        printf '    %-32s %s %s(replaces yours, kept as *%s)%s\n' "$rname" "$shown" "$c_dim" "$BAK_SUFFIX" "$c_reset"
       else
-        printf '    %-32s %s\n' "$name" "$url"
+        printf '    %-32s %s\n' "$rname" "$shown"
       fi
     done
     note "each one is rebuilt by \`omarchy webapp install\` from a name, a URL and an icon — never by copying its .desktop file"
@@ -1485,13 +1524,26 @@ restore_webapps() {
   # and without one the installer goes to the network for a favicon.
   [[ -d $dir/icons ]] && rsync -a --safe-links --backup --suffix="$BAK_SUFFIX" -- "$dir/icons/" "$HOME/.local/share/icons/hicolor/256x256/apps/"
 
-  local row ok=0 target
+  local row ok=0 target flag_words=()
   for row in "${rows[@]:-}"; do
     [[ -n $row ]] || continue
-    IFS=$'\t' read -r name url icon <<<"$row"
+    IFS=$'\t' read -r launcher name url icon flags <<<"$row"
     target="$HOME/.local/share/applications/$name.desktop"
     [[ -f $target ]] && cp -p "$target" "$target$BAK_SUFFIX"
-    if omarchy webapp install "$name" "$url" "${icon:-$url}" >/dev/null 2>&1; then
+    local -a install_args=("$name" "$url" "${icon:-$url}")
+    # The installer takes the whole Exec line for exactly this, and what is
+    # handed over is assembled here from the URL, the flags and the launcher form
+    # that were all checked above. Without flags the plain launcher is the one
+    # the installer writes itself, and passing the line then would only restate
+    # it — but an or-focus launcher has to be passed, or it comes back as the
+    # plain form and opens a second window instead of focusing the first.
+    if [[ -n $flags ]]; then
+      read -r -a flag_words <<<"$flags"
+      install_args+=("$(webapp_exec_line "$launcher" "$url" "${flag_words[@]}")")
+    elif [[ $launcher != omarchy-launch-webapp ]]; then
+      install_args+=("$(webapp_exec_line "$launcher" "$url")")
+    fi
+    if omarchy webapp install "${install_args[@]}" >/dev/null 2>&1; then
       ok=$((ok + 1))
     else
       step_warn webapps "could not add web app $name"
@@ -2197,6 +2249,22 @@ verify_list() {
   done <"$file" | sort -u
 }
 
+# Each category reports a list of names, and a name can contain a space: a web
+# app label is two words as often as not. So the lists are joined with the unit
+# separator the vault's own tables use, and turned into spaces only where they
+# are printed or counted. Splitting them on spaces put "Microsoft Teams" in the
+# JSON as two entries, so a caller counting them got a number that was not a
+# count.
+list_join() { local IFS=$'\037'; printf '%s' "$*"; }
+list_display() { printf '%s' "${1//$'\037'/ }"; }
+# How many names a list holds. Counting words would call "Microsoft Teams" two
+# names, which is how the refused line came to say "2 entries" about one.
+list_count() {
+  [[ -n ${1:-} ]] || { printf '0'; return 0; }
+  printf '%s' "$1" | tr $'\037' '\n' | grep -c . || true
+  return 0
+}
+
 cmd_verify() {
   local as_json=0
   while (( $# > 0 )); do
@@ -2210,8 +2278,10 @@ cmd_verify() {
   local manifest; manifest=$(manifest_path)
 
   # Each category reports three things: how many the vault names, how many are
-  # here, and which ones are not.
-  local -A want=() have=() missing=()
+  # here, and which ones are not. A fourth list holds what a restore would refuse
+  # outright: those are not missing, they are not restorable, and counting them
+  # as want/have is what made verify report a match where a restore had work.
+  local -A want=() have=() missing=() refused=()
 
   # ---- packages
   local installed; installed=$(mktemp)
@@ -2221,8 +2291,8 @@ cmd_verify() {
     verify_list "$VAULT/packages/foreign.txt" valid_pkg
   } | sort -u >"$wanted_pkgs"
   want[packages]=$(count_lines "$wanted_pkgs")
-  missing[packages]=$(comm -23 "$wanted_pkgs" "$installed" | tr '\n' ' ' | sed 's/ $//')
-  have[packages]=$(( ${want[packages]} - $(printf '%s' "${missing[packages]}" | wc -w) ))
+  missing[packages]=$(comm -23 "$wanted_pkgs" "$installed" | tr '\n' $'\037' | sed 's/\037$//')
+  have[packages]=$(( ${want[packages]} - $(list_count "${missing[packages]}") ))
   rm -f "$installed" "$wanted_pkgs"
 
   # ---- dotfiles: what a restore would still have to write
@@ -2252,23 +2322,38 @@ cmd_verify() {
       fi
     done < <(tr '\t' '\037' <"$VAULT/omarchy/themes.tsv")
   fi
-  want[themes]=$themes; have[themes]=$themes_here; missing[themes]="${missing_themes[*]:-}"
+  want[themes]=$themes; have[themes]=$themes_here; missing[themes]="$(list_join "${missing_themes[@]:-}")"
 
   # ---- web apps
-  local webapps=0 webapps_here=0 missing_webapps=() desktop app
+  # A launcher a restore would refuse is not a launcher this can count. The rule
+  # for what a restore can rebuild lives in launcher_travels, and this is the
+  # same call: verify used to answer "11 of 11" for a vault where a restore would
+  # have rebuilt nine, which is a machine reported as matching when it was not.
+  #
+  # The name this looks for is the one in the file, because that is the name a
+  # restore rebuilds under. Matching on the vault's file name instead meant a
+  # vault whose launcher file is not named after its Name= field had verify
+  # report missing a launcher the restore had just created.
+  local webapps=0 webapps_here=0 missing_webapps=() refused_webapps=() desktop app label
   if [[ -d $VAULT/webapps/apps ]]; then
     for desktop in "$VAULT"/webapps/apps/*.desktop; do
       [[ -f $desktop ]] || continue
       app=$(basename "$desktop" .desktop)
+      label=$(sed -n 's/^Name=//p' "$desktop" | head -1)
+      [[ -n $label ]] || label="$app"
+      if ! launcher_travels "$desktop" || ! valid_label "$label"; then
+        refused_webapps+=("$(plain "$label")"); continue
+      fi
       webapps=$((webapps + 1))
-      if [[ -f $HOME/.local/share/applications/$app.desktop ]]; then
+      if [[ -f $HOME/.local/share/applications/$label.desktop ]]; then
         webapps_here=$((webapps_here + 1))
       else
-        missing_webapps+=("$app")
+        missing_webapps+=("$label")
       fi
     done
   fi
-  want[webapps]=$webapps; have[webapps]=$webapps_here; missing[webapps]="${missing_webapps[*]:-}"
+  want[webapps]=$webapps; have[webapps]=$webapps_here; missing[webapps]="$(list_join "${missing_webapps[@]:-}")"
+  refused[webapps]="$(list_join "${refused_webapps[@]:-}")"
 
   # ---- plugins
   local plugins=0 plugins_here=0 missing_plugins=() id
@@ -2284,7 +2369,7 @@ cmd_verify() {
       fi
     done < <(tr '\t' '\037' <"$VAULT/plugins/plugins.tsv")
   fi
-  want[plugins]=$plugins; have[plugins]=$plugins_here; missing[plugins]="${missing_plugins[*]:-}"
+  want[plugins]=$plugins; have[plugins]=$plugins_here; missing[plugins]="$(list_join "${missing_plugins[@]:-}")"
 
   # ---- services
   local units=0 units_here=0 missing_units=() unit
@@ -2300,7 +2385,7 @@ cmd_verify() {
       fi
     done <"$VAULT/services/user-units.txt"
   fi
-  want[services]=$units; have[services]=$units_here; missing[services]="${missing_units[*]:-}"
+  want[services]=$units; have[services]=$units_here; missing[services]="$(list_join "${missing_units[@]:-}")"
 
   local order=(packages config themes webapps plugins services)
   local category complete=1
@@ -2315,8 +2400,10 @@ cmd_verify() {
         --argjson want "${want[$category]}" \
         --argjson have "${have[$category]}" \
         --arg missing "${missing[$category]}" \
+        --arg refused "${refused[$category]:-}" \
         '{key: $k, want: $want, have: $have,
-          missing: ($missing | split(" ") | map(select(length > 0)))}')
+          missing: ($missing | split("\u001f") | map(select(length > 0))),
+          refused: ($refused | split("\u001f") | map(select(length > 0)))}')
       rows+=$'\n'
     done
     printf '%s' "$rows" | jq -s \
@@ -2325,7 +2412,7 @@ cmd_verify() {
       --argjson manifest "$(cat "$manifest")" \
       '{vault: $vault, complete: ($complete == 1),
         takenAt: $manifest.createdAt, takenFrom: $manifest.machine.hostname,
-        categories: (map({key: .key, value: {want: .want, have: .have, missing: .missing}}) | from_entries)}'
+        categories: (map({key: .key, value: {want: .want, have: .have, missing: .missing, refused: .refused}}) | from_entries)}'
     (( complete )) || return 1
     return 0
   fi
@@ -2335,20 +2422,26 @@ cmd_verify() {
     "$(plain "$(jq -r '.createdAt // "?"' "$manifest")")" \
     "$(plain "$(jq -r '.machine.hostname // "?"' "$manifest")")"
 
-  local detail
+  local detail refused_n
   for category in "${order[@]}"; do
+    refused_n=$(list_count "${refused[$category]:-}")
     if (( ${want[$category]} == 0 )); then
-      printf '  %-11s %snot in this vault%s\n' "$category" "$c_dim" "$c_reset"
-      continue
-    fi
-    detail="${missing[$category]}"
-    if (( ${have[$category]} >= ${want[$category]} )); then
-      printf '  %-11s %s✓%s %s of %s\n' "$category" "$c_green" "$c_reset" \
-        "${have[$category]}" "${want[$category]}"
+      # A category whose only entries are ones a restore would refuse is not
+      # "not in this vault": there is something here, and it will not travel.
+      (( refused_n > 0 )) ||
+        printf '  %-11s %snot in this vault%s\n' "$category" "$c_dim" "$c_reset"
     else
-      printf '  %-11s %s✗%s %s of %s   %s%s%s\n' "$category" "$c_yellow" "$c_reset" \
-        "${have[$category]}" "${want[$category]}" "$c_dim" "$(plain "${detail:0:80}")" "$c_reset"
+      detail="$(list_display "${missing[$category]}")"
+      if (( ${have[$category]} >= ${want[$category]} )); then
+        printf '  %-11s %s✓%s %s of %s\n' "$category" "$c_green" "$c_reset" \
+          "${have[$category]}" "${want[$category]}"
+      else
+        printf '  %-11s %s✗%s %s of %s   %s%s%s\n' "$category" "$c_yellow" "$c_reset" \
+          "${have[$category]}" "${want[$category]}" "$c_dim" "$(plain "${detail:0:80}")" "$c_reset"
+      fi
     fi
+    (( refused_n == 0 )) || printf '  %-11s %s%s a restore cannot rebuild: %s%s\n' \
+      "$category" "$c_dim" "$(plural "$refused_n" "entry" "entries")" "$(list_display "${refused[$category]}")" "$c_reset"
   done
   printf '\n'
   if (( complete )); then
@@ -2710,6 +2803,116 @@ valid_git_remote() {
   return 1
 }
 
+# ------------------------------------------------------- web app launchers
+#
+# A web app launcher is an Exec line, and Omarchy has written that line three
+# ways: a bare URL, a bare URL followed by browser flags, and a quoted URL
+# (what `omarchy webapp install` writes today, quoting per the Desktop Entry
+# spec). Reading it as "everything after the launcher name is the URL" refused
+# two of the three, so a launcher made by the current installer, or one that
+# carries a Chromium profile flag, was captured and then refused on the machine
+# that needed it. The line is parsed as what it is — an argument list — and
+# every piece is checked on its own.
+#
+# `%%` is how the Desktop Entry spec writes one literal percent, and it is how
+# the installer writes a URL that contains one, so it is undone here and put
+# back on the way out.
+
+# One Exec argument per line, split the way the spec says: whitespace
+# separates, double quotes group, and inside them a backslash escapes \\ \" \`
+# and \$. Comparisons are literal string tests rather than `case` patterns:
+# a pattern arm written `'\\'` is matched after quote removal, and a pattern
+# backslash escapes the next character, so it never matched a lone backslash.
+desktop_exec_words() {
+  local s="$1" word="" in_quote=0 i=0 n=${#1} c next
+  while (( i < n )); do
+    c="${s:i:1}"
+    next="${s:i+1:1}"
+    # %% is one literal percent, in or out of quotes.
+    if [[ $c == '%' && $next == '%' ]]; then
+      word+='%'; i=$((i + 2)); continue
+    fi
+    if (( in_quote )); then
+      if [[ $c == '"' ]]; then in_quote=0; i=$((i + 1)); continue; fi
+      # Inside quotes these four take a backslash off; anything else keeps it.
+      if [[ $c == '\' ]] &&
+        [[ $next == '\' || $next == '"' || $next == '`' || $next == '$' ]]; then
+        word+="$next"; i=$((i + 2)); continue
+      fi
+      word+="$c"; i=$((i + 1)); continue
+    fi
+    if [[ $c == '"' ]]; then in_quote=1; i=$((i + 1)); continue; fi
+    if [[ $c == ' ' || $c == $'\t' ]]; then
+      if [[ -n $word ]]; then printf '%s\n' "$word"; word=""; fi
+      i=$((i + 1)); continue
+    fi
+    # A backslash outside quotes stays a character. The spec does not make it
+    # special there, and a word it lands in still has to match a URL or a flag
+    # to be used at all, so keeping it is the conservative reading.
+    word+="$c"; i=$((i + 1))
+  done
+  if [[ -n $word ]]; then printf '%s\n' "$word"; fi
+  return 0
+}
+
+# One browser flag, and nothing else: an option with an optional =value, no
+# whitespace, no quote, no shell metacharacter. A launcher's second word that is
+# not a flag — a second URL, a `;`, a command — fails this and the launcher is
+# refused rather than rebuilt.
+#
+# Flags are installed as extra arguments to the browser, so a vault can hand it
+# something like --user-data-dir=/path. That is the point of carrying them, and
+# it is stated in the README; what the grammar rules out is a second word, a
+# quote or a backslash, so no flag can become a second command or swallow the
+# one after it.
+WEBAPP_FLAG_RE='^--[A-Za-z0-9][A-Za-z0-9-]{0,31}(=[A-Za-z0-9._:/@,+-]{1,128})?$'
+
+# Nothing a launcher needs is anywhere near this long, and the parse below walks
+# the line a character at a time: a vault is a stranger's file, so a 40 KB Exec
+# line would otherwise buy a 30-second stall in verify and in every restore. The
+# cap is what makes that cost bounded instead of quadratic on someone else's
+# input.
+WEBAPP_MAX_EXEC=1024
+
+# The one shape a launcher comes back from: omarchy-launch-webapp, one http(s)
+# URL, then zero or more flags. Prints "<launcher>\t<url>\t<flags>"; returns 1 for
+# anything else, which is a command, and commands do not travel.
+webapp_parts() {
+  local exec_line="$1"
+  (( ${#exec_line} <= WEBAPP_MAX_EXEC )) || return 1
+
+  local words=() word
+  while IFS= read -r word; do
+    [[ -n $word ]] && words+=("$word")
+  done < <(desktop_exec_words "$exec_line")
+
+  (( ${#words[@]} >= 2 )) || return 1
+  case "${words[0]}" in
+    omarchy-launch-webapp|omarchy-launch-or-focus-webapp) ;;
+    *) return 1 ;;
+  esac
+
+  local url="${words[1]}" flags=() i
+  valid_https "$url" || return 1
+  for (( i = 2; i < ${#words[@]}; i++ )); do
+    [[ ${words[i]} =~ $WEBAPP_FLAG_RE ]] || return 1
+    flags+=("${words[i]}")
+  done
+  printf '%s\t%s\t%s' "${words[0]}" "$url" "${flags[*]:-}"
+}
+
+# The launcher line to hand the installer as its custom exec, rebuilt from the
+# pieces webapp_parts validated. It keeps the launcher the vault used — asking
+# for the plain form when the capture said or-focus would silently change what
+# the launcher does — and writes a literal percent the way the spec wants it read
+# back.
+webapp_exec_line() {
+  local launcher="$1" url="$2"; shift 2
+  local flag
+  printf '%s %s' "$launcher" "${url//%/%%}"
+  for flag in "$@"; do printf ' %s' "$flag"; done
+}
+
 # Read a newline-separated list, keep only what `predicate` accepts, and report
 # how much was thrown away so a tampered vault is loud rather than silent.
 keep_valid() {
@@ -2818,21 +3021,48 @@ ress_link() {
   printf '%s/gh/%s' "$RESS_HOST" "$url"
 }
 
+# Web apps for a loadout. The profile format is a name, a URL and an icon: it has
+# no field for a browser flag or for the or-focus launcher form, so a launcher
+# that carries either is left out rather than published as something that would
+# come back different. How many were left out is counted by
+# launchers_left_out_of_profile, because a count set in here would not survive
+# the command substitution this is called in.
 collect_webapps_json() {
-  local file exec_line url name icon
+  local file parts url flags launcher name icon rows=()
   for file in "$HOME"/.local/share/applications/*.desktop; do
     [[ -f $file ]] || continue
-    exec_line=$(sed -n 's/^Exec=//p' "$file" | head -1)
-    # Only the plain launcher form travels. A web app with a custom Exec is a
-    # command, and commands are exactly what a profile must not be able to move.
-    [[ $exec_line == "omarchy-launch-webapp "* ]] || continue
-    url="${exec_line#omarchy-launch-webapp }"
+    # A launcher Omarchy ships is not the author's state, and whoever applies
+    # this loadout already has it: the same rule the capture uses.
+    package_owned_launcher "$file" "$(basename "$file")" && continue
+    # Only a launcher that travels is in the profile. A restore refuses anything
+    # else, so an entry for one would be published as something that cannot come
+    # back — the same question restore and verify ask, asked here.
+    launcher_travels "$file" || continue
+    parts=$(webapp_parts "$(launcher_exec "$file")") || continue
+    IFS=$'\t' read -r launcher url flags <<<"$parts"
+    [[ -n $flags || $launcher != omarchy-launch-webapp ]] && continue
     name=$(sed -n 's/^Name=//p' "$file" | head -1)
     icon=$(sed -n 's/^Icon=//p' "$file" | head -1)
-    valid_https "$url" || continue
     valid_label "$name" || continue
-    jq -nc --arg name "$name" --arg url "$url" --arg icon "$icon" '$ARGS.named'
-  done | jq -s '.'
+    rows+=("$(jq -nc --arg name "$name" --arg url "$url" --arg icon "$icon" '$ARGS.named')")
+  done
+  (( ${#rows[@]} == 0 )) && { printf '[]'; return 0; }
+  printf '%s\n' "${rows[@]}" | jq -s '.'
+}
+
+# Launchers on this machine that carry something the profile format cannot: a
+# browser flag, or the or-focus launcher form. Same rules, counted where the
+# answer can be seen.
+launchers_left_out_of_profile() {
+  local file parts launcher flags n=0
+  for file in "$HOME"/.local/share/applications/*.desktop; do
+    [[ -f $file ]] || continue
+    package_owned_launcher "$file" "$(basename "$file")" && continue
+    parts=$(webapp_parts "$(launcher_exec "$file")") || continue
+    IFS=$'\t' read -r launcher url flags <<<"$parts"
+    [[ -n $flags || $launcher != omarchy-launch-webapp ]] && n=$((n + 1))
+  done
+  printf '%s' "$n"
 }
 
 collect_plugins_json() {
@@ -2902,6 +3132,11 @@ cmd_share() {
       theme: {name: $themeName, url: $themeUrl, commit: $themeCommit}}' >"$out/profile.json"
 
   local n_pkg n_aur n_plug n_web
+  # Said out loud: a web app with browser flags is not in the profile, and the
+  # person exporting it is the only one who can decide what to do about that.
+  local left_out; left_out=$(launchers_left_out_of_profile)
+  (( left_out == 0 )) || step_warn share \
+    "$(plural "$left_out" "web app") left out of the profile — the format has no field for the browser flags or the launcher form they run with"
   n_pkg=$(jq '.packages.native | length' "$out/profile.json")
   n_aur=$(jq '.packages.aur | length' "$out/profile.json")
   n_plug=$(jq '.plugins | length' "$out/profile.json")

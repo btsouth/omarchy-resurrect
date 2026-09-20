@@ -108,7 +108,7 @@ picks up at the step it stopped on.
 | **Packages** | `pacman -Qqen` and `pacman -Qqem` | only the ones missing here get installed |
 | **Dotfiles** | a curated list under `$HOME` — shells, Hyprland, terminals, editors | rsync, with every replaced file kept as `*.ress-bak` |
 | **Omarchy** | `shell.json` bar layout, themes, hooks, extensions, branding, active theme | git themes re-cloned at the recorded commit, hand-made themes copied |
-| **Web apps** | the `.desktop` launchers made by `omarchy webapp`, plus icons | rebuilt through `omarchy webapp install` from the name, URL and icon — never copied |
+| **Web apps** | the `.desktop` launchers you made, plus icons — a launcher Omarchy ships is left out | rebuilt through `omarchy webapp install` from the name, URL, icon and any browser flags — never copied |
 | **Plugins** | every shell plugin: git remote, **exact commit**, enabled state | cloned and checked out at that commit, detached |
 | **Secrets** | *off by default* — a list you write yourself | `age`-encrypted; see [Secrets](#secrets) |
 
@@ -135,6 +135,10 @@ Deliberately, and this list is the point:
   secrets bundle has no size cap — it holds exactly what you listed.)
 - **Machine identity.** Disk UUIDs, hostname, network state, hardware config.
   A restore should make a machine *yours*, not make it pretend to be another one.
+- **The web app launchers Omarchy ships.** They live in
+  `/usr/share/omarchy/applications`, every install has them already, and a
+  byte-identical copy in your own directory is not captured. A launcher you made
+  is — browser flags and all.
 - **Your data.** Documents, photos, repos. ress captures how a machine is
   set up, not what is on it. Use a real backup tool for real backups.
 
@@ -477,6 +481,26 @@ a command, so there is nowhere to put one. Web apps are rebuilt from a name, a
 URL and an icon through `omarchy webapp install` rather than by copying a
 `.desktop` file, because a `.desktop` file *is* an `Exec` line — and a restore
 rebuilds the launchers in your own vault the same way, for the same reason.
+
+A launcher that carries browser flags is the one case where more than a URL has
+to come back: `--profile-directory=Microsoft365`, for instance, is what makes a
+second account its own window. The captured `Exec` line is read as an argument
+list — one http(s) URL, then flags that match a shape with no whitespace, no
+quote and no shell metacharacter in it — and the line handed to the installer is
+assembled from those pieces rather than copied out of the vault. A launcher whose
+second word is a command is refused instead of rebuilt, and an `Exec` line longer
+than a launcher could ever need is refused unread, because the parse costs time
+proportional to its length and that line comes from someone else's file.
+
+Flags reach the browser verbatim, so a vault can shape how a browser starts —
+`--user-data-dir=/path` is a flag like any other. What the grammar rules out is a
+second word, so no flag can become a command or swallow the one after it. Carry
+flags you did not write the same way you carry a script you have not read.
+
+A loadout has no field for a flag, or for the or-focus launcher form, so a
+launcher that carries either is left out of a shared profile rather than
+published as something that would come back different. The export says how many
+were affected.
 
 That is not the same as carrying no code. A loadout names plugin and theme
 repositories and `ress apply` clones them, so somebody else's code does end up
