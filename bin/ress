@@ -413,6 +413,9 @@ capture_omarchy() {
     url=$(git -C "$theme" remote get-url origin 2>/dev/null || true)
     if [[ -n $url ]]; then
       printf '%s\t%s\t%s\n' "$name" "$url" "$(git -C "$theme" rev-parse HEAD 2>/dev/null || true)" >>"$out/themes.tsv"
+      # Same rule the restore applies, said where it can still be acted on.
+      valid_git_remote "$url" ||
+        step_warn omarchy "theme $name has a remote a restore will not clone ($(plain "$url")) — it will travel as nothing at all"
     else
       printf '%s\t\t\n' "$name" >>"$out/themes.tsv"
       rsync -a --exclude '.git/' --exclude-from="$excludes" --max-size=20m -- "$theme" "$out/themes/$name/" 2>/dev/null
@@ -517,7 +520,16 @@ capture_plugins() {
     if [[ -f $shell_json ]] && grep -qF "\"$id\"" "$shell_json"; then enabled=1; fi
     printf '%s\t%s\t%s\t%s\n' "$id" "$url" "$enabled" "$sha" >>"$out/plugins.tsv"
     n=$((n + 1))
-    [[ -z $url ]] && step_warn plugins "$id has no git remote — it will not be restored"
+    # Both of these are said here rather than on the far side: a plugin that
+    # cannot be re-cloned is a gap in the vault, and the machine that has the
+    # checkout is the only one where it can be closed. A `file://` remote or a
+    # bare local path is the usual way this happens — a plugin developed in a
+    # working directory rather than installed from somewhere git can fetch.
+    if [[ -z $url ]]; then
+      step_warn plugins "$id has no git remote — it will not be restored"
+    elif ! valid_git_remote "$url"; then
+      step_warn plugins "$id's remote is not one a restore will clone ($(plain "$url")) — push it somewhere git can fetch, or it will not be restored"
+    fi
   done
   CAPTURED_PLUGINS=$n
   step_ok plugins "$(plural "$n" plugin)"
@@ -2356,11 +2368,22 @@ cmd_verify() {
   refused[webapps]="$(list_join "${refused_webapps[@]:-}")"
 
   # ---- plugins
-  local plugins=0 plugins_here=0 missing_plugins=() id
+  # A plugin a restore cannot clone is not a plugin this can count. It is in the
+  # vault and it will never be on the far side, so counting it as missing left a
+  # machine that could not be brought into line being told to restore, for good.
+  # The rule is the restore's own: a remote it will not take, or a commit that is
+  # not a commit, is a refusal rather than a gap.
+  local plugins=0 plugins_here=0 missing_plugins=() refused_plugins=() id purl psha
   if [[ -f $VAULT/plugins/plugins.tsv ]]; then
-    while IFS=$'\037' read -r id url _ tsha; do
+    while IFS=$'\037' read -r id purl _ psha; do
       [[ -n $id ]] || continue
-      valid_id "$id" || continue
+      if ! valid_id "$id"; then refused_plugins+=("$(plain "$id")"); continue; fi
+      if [[ -z $purl ]] || ! valid_git_remote "$purl"; then
+        refused_plugins+=("$(plain "$id")"); continue
+      fi
+      if [[ -n $psha ]] && ! valid_sha "$psha"; then
+        refused_plugins+=("$(plain "$id")"); continue
+      fi
       plugins=$((plugins + 1))
       if [[ -f $HOME/.config/omarchy/plugins/$id/manifest.json ]]; then
         plugins_here=$((plugins_here + 1))
@@ -2370,6 +2393,7 @@ cmd_verify() {
     done < <(tr '\t' '\037' <"$VAULT/plugins/plugins.tsv")
   fi
   want[plugins]=$plugins; have[plugins]=$plugins_here; missing[plugins]="$(list_join "${missing_plugins[@]:-}")"
+  refused[plugins]="$(list_join "${refused_plugins[@]:-}")"
 
   # ---- services
   local units=0 units_here=0 missing_units=() unit
