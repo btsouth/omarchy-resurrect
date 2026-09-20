@@ -16,7 +16,12 @@ real=""
 IFS=: read -r -a parts <<<"$PATH"
 for dir in "${parts[@]}"; do
   [[ $dir == "$(dirname "${BASH_SOURCE[0]}")" ]] && continue
-  [[ -x $dir/git ]] && { real="$dir/git"; break; }
+  [[ -x $dir/git ]] || continue
+  # Another copy of this double is not a real git. Resolving to one puts the two
+  # in a loop — each skips its own directory, finds the other, and hands off —
+  # which looks like a case that hangs for no reason. Only real git gets exec'd.
+  grep -q 'Test double: real git' "$dir/git" 2>/dev/null && continue
+  real="$dir/git"; break
 done
 [[ -n $real ]] || { echo "test double: no real git on PATH" >&2; exit 127; }
 

@@ -7,12 +7,24 @@ OMARCHY_SHELL=/usr/share/omarchy/shell
 
 # ---- 1. Model.js is plain JavaScript, so it gets real unit tests ---------
 
-if command -v node >/dev/null 2>&1; then
-  OUT=$(node "$REPO_DIR/tests/model-test.js" 2>&1); STATUS=$?
+# The first `node` on PATH is not always a node. On a machine where it is a
+# version-manager shim — mise, asdf, nvm — the shim can fail before node starts:
+# mise refuses to read its global config untrusted, and it only asks that when
+# the working directory is under $HOME, which is exactly where this suite runs.
+# So the candidates are tried in the environment this case runs in, and the first
+# one that actually answers is the one the tests use.
+NODE=""
+while IFS= read -r candidate; do
+  [[ -n $candidate ]] || continue
+  if "$candidate" --version >/dev/null 2>&1; then NODE="$candidate"; break; fi
+done < <(type -a -p node 2>/dev/null; printf '/usr/bin/node\n/bin/node\n')
+
+if [[ -n $NODE ]]; then
+  OUT=$("$NODE" "$REPO_DIR/tests/model-test.js" 2>&1); STATUS=$?
   assert_ok "Model.js unit tests"
   assert_output "all Model.js assertions passed"
 else
-  echo "  (skipped: no node — Model.js unit tests need one)"
+  echo "  (skipped: no node that runs — Model.js unit tests need one)"
 fi
 
 # ---- 2. the .qml files must at least parse and resolve ------------------
