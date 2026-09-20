@@ -11,13 +11,23 @@ case "${1:-} ${2:-}" in
   "plugin enable")  exit 0 ;;
   "plugin remove")  exit 0 ;;
   "webapp install")
-    name="${3:-}"; url="${4:-}"; icon="${5:-}"
+    name="${3:-}"; url="${4:-}"; icon="${5:-}"; custom="${6:-}"
     [[ -n $name && -n $url ]] || exit 1
     mkdir -p "$HOME/.local/share/applications"
+    # The real installer takes a whole Exec line as its fourth argument and
+    # writes it verbatim. Without one it writes the URL as a single quoted
+    # argument, doubling a literal percent the way the Desktop Entry spec wants
+    # it read back. A double that wrote the URL raw would make a launcher look
+    # different from the one Omarchy makes.
+    if [[ -n $custom ]]; then
+      exec_line="$custom"
+    else
+      exec_line="omarchy-launch-webapp \"$(printf '%s' "$url" | sed 's/%/%%/g')\""
+    fi
     cat >"$HOME/.local/share/applications/$name.desktop" <<DESKTOP
 [Desktop Entry]
 Name=$name
-Exec=omarchy-launch-webapp $url
+Exec=$exec_line
 Icon=$icon
 Type=Application
 DESKTOP

@@ -176,6 +176,56 @@ run_mutation plain-not-applied \
   'plain() { printf '"'"'%s'"'"' "$1" | tr -d '"'"'\000-\037\177'"'"'; }' \
   'plain() { printf '"'"'%s'"'"' "$1"; }'
 
+# ---- web app launchers ----------------------------------------------------
+
+run_mutation webapp-captures-stock \
+  '    if package_owned_launcher "$desktop" "$name"; then stock=$((stock + 1)); continue; fi' \
+  ':'
+
+run_mutation webapp-quotes-kept \
+  'in_quote=1; i=$((i + 1)); continue; fi' \
+  'in_quote=1; i=$((i + 1)); fi'
+
+run_mutation webapp-percent-not-read \
+  '"${url//%/%%}"' \
+  '"$url"'
+
+run_mutation webapp-flags-dropped \
+  '      install_args+=("$(webapp_exec_line "$launcher" "$url" "${flag_words[@]}")")' \
+  '      install_args+=("$(webapp_exec_line "$launcher" "$url")")'
+
+run_mutation webapp-restore-refused-unnamed \
+  '    if ! launcher_travels "$desktop"; then refused+=("$(plain "$name")"); continue; fi' \
+  '    if ! launcher_travels "$desktop"; then continue; fi'
+
+run_mutation webapp-verify-file-name \
+  '      if [[ -f $HOME/.local/share/applications/$label.desktop ]]; then' \
+  '      if [[ -f $HOME/.local/share/applications/$app.desktop ]]; then'
+
+run_mutation webapp-share-publishes-refused \
+  '    launcher_travels "$file" || continue' \
+  '    :'
+
+run_mutation webapp-restore-label-unchecked \
+  '    if ! valid_label "$name"; then refused+=("$(plain "$name")"); continue; fi' \
+  '    :'
+
+run_mutation webapp-or-focus-flattened \
+  '      install_args+=("$(webapp_exec_line "$launcher" "$url")")' \
+  '      :'
+
+run_mutation webapp-long-line-unbounded \
+  '  (( ${#exec_line} <= WEBAPP_MAX_EXEC )) || return 1' \
+  '  :'
+
+run_mutation webapp-capture-misses-two-exec \
+  '    launcher_travels "$desktop" || unrebuildable+=("${name%.desktop}")' \
+  '    webapp_parts "$(launcher_exec "$desktop")" >/dev/null || unrebuildable+=("${name%.desktop}")'
+
+run_mutation verify-lists-split-on-spaces \
+  'list_join() { local IFS=$'"'"'\037'"'"'; printf '"'"'%s'"'"' "$*"; }' \
+  'list_join() { printf '"'"'%s'"'"' "$*"; }'
+
 # ---- settings and capture -------------------------------------------------
 
 run_mutation autostart-always \
