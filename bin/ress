@@ -161,6 +161,33 @@ cat_enabled() {
   [[ ${CFG[$key]:-0} == 1 ]]
 }
 
+# ---------------------------------------------------- settings, as JSON
+#
+# The config file is meant to be edited by hand, so a value in it can be
+# anything. Raw values used to go straight into `jq --argjson`, and
+# `INCLUDE_OMARCHY=` or `AUTO_INTERVAL_HOURS=24h` then made
+# `ress status --json` exit 2 with no output at all — while the panel reads
+# nothing but that command, so the panel's whole backup summary went blank
+# without a word anywhere. Nothing below trusts the text any more: a flag is
+# read exactly the way cat_enabled reads it, and a number has to be a number.
+
+json_flag() { [[ ${1:-} == 1 ]] && printf 'true' || printf 'false'; }
+
+json_number() {
+  local value="${1:-}" fallback="${2:-0}"
+  [[ $value =~ ^[0-9]{1,9}$ ]] || value="$fallback"
+  printf '%s' "$value"
+}
+
+# The vault's manifest as JSON, or null when its copy is not JSON at all. The
+# rest of the answer is still true, and a status command that answers nothing is
+# worse than one that answers with a hole in it.
+manifest_json() {
+  has_manifest || { printf 'null'; return 0; }
+  local file; file=$(manifest_path)
+  if jq -e . "$file" >/dev/null 2>&1; then jq -c . "$file"; else printf 'null'; fi
+}
+
 VAULT=""
 resolve_vault() { VAULT="${VAULT_OVERRIDE:-${CFG[VAULT]}}"; }
 
@@ -2058,12 +2085,12 @@ cmd_status() {
   resolve_vault
 
   local last=0 commits=0 dirty=0 ahead=0 has_vault=0
-  [[ -f $STATE_DIR/last-backup ]] && last=$(<"$STATE_DIR/last-backup")
+  [[ -f $STATE_DIR/last-backup ]] && last=$(json_number "$(<"$STATE_DIR/last-backup")")
   if has_manifest; then
     has_vault=1
-    commits=$(git_vault rev-list --count HEAD 2>/dev/null || echo 0)
+    commits=$(json_number "$(git_vault rev-list --count HEAD 2>/dev/null || echo 0)")
     git_vault diff --quiet 2>/dev/null || dirty=1
-    ahead=$(git_vault rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
+    ahead=$(json_number "$(git_vault rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)")
   fi
 
   if (( as_json )); then
@@ -2071,26 +2098,26 @@ cmd_status() {
       --argjson hasVault "$has_vault" \
       --arg vault "$VAULT" \
       --arg remote "${CFG[REMOTE]}" \
-      --argjson lastBackup "${last:-0}" \
-      --argjson commits "${commits:-0}" \
-      --argjson unpushed "${ahead:-0}" \
-      --argjson autoBackup "$( [[ ${CFG[AUTO_BACKUP]} == on ]] && echo true || echo false )" \
-      --argjson intervalHours "${CFG[AUTO_INTERVAL_HOURS]:-24}" \
+      --argjson lastBackup "$last" \
+      --argjson commits "$commits" \
+      --argjson unpushed "$ahead" \
+      --argjson autoBackup "$( [[ ${CFG[AUTO_BACKUP]:-off} == on ]] && echo true || echo false )" \
+      --argjson intervalHours "$(json_number "${CFG[AUTO_INTERVAL_HOURS]:-24}" 24)" \
       --argjson categories "$(jq -n \
-        --argjson packages "${CFG[INCLUDE_PACKAGES]}" \
-        --argjson config "${CFG[INCLUDE_CONFIG]}" \
-        --argjson omarchy "${CFG[INCLUDE_OMARCHY]}" \
-        --argjson webapps "${CFG[INCLUDE_WEBAPPS]}" \
-        --argjson plugins "${CFG[INCLUDE_PLUGINS]}" \
-        --argjson secrets "${CFG[INCLUDE_SECRETS]}" \
-        '$ARGS.named | map_values(. == 1)')" \
+        --argjson packages "$(json_flag "${CFG[INCLUDE_PACKAGES]:-0}")" \
+        --argjson config "$(json_flag "${CFG[INCLUDE_CONFIG]:-0}")" \
+        --argjson omarchy "$(json_flag "${CFG[INCLUDE_OMARCHY]:-0}")" \
+        --argjson webapps "$(json_flag "${CFG[INCLUDE_WEBAPPS]:-0}")" \
+        --argjson plugins "$(json_flag "${CFG[INCLUDE_PLUGINS]:-0}")" \
+        --argjson secrets "$(json_flag "${CFG[INCLUDE_SECRETS]:-0}")" \
+        '$ARGS.named')" \
       --argjson settings "$(jq -n \
         --arg aur "${CFG[AUR]}" \
         --arg enableUnits "${CFG[ENABLE_UNITS]}" \
         --arg secretScan "${CFG[SECRET_SCAN]}" \
-        --argjson captureAutostart "$( [[ ${CFG[CAPTURE_AUTOSTART]} == 1 ]] && echo true || echo false )" \
+        --argjson captureAutostart "$(json_flag "${CFG[CAPTURE_AUTOSTART]:-0}")" \
         '$ARGS.named')" \
-      --argjson manifest "$( has_manifest && cat "$(manifest_path)" || echo null )" \
+      --argjson manifest "$(manifest_json)" \
       '$ARGS.named'
     return 0
   fi
