@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "tsouth89.resurrect",
   "name": "ress",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "Tyler South",
   "license": "MIT",
   "description": "Capture this machine \u2014 packages, dotfiles, themes, web apps, plugins \u2014 and replay it onto a fresh Omarchy install. Share the loadout as a link.",

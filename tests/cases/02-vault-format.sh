@@ -9,7 +9,8 @@ ress backup -m first
 assert_ok "backup"
 assert_file "$VAULT/ress.json" "manifest is written as ress.json"
 assert_no_file "$VAULT/resurrect.json" "the old name is not written"
-assert_equals "$(jq -r '.ressVersion' "$VAULT/ress.json")" "1.1.0" "manifest records the ress version"
+assert_equals "$(jq -r '.ressVersion' "$VAULT/ress.json")" "$(ress --version)" \
+  "the manifest records the version the CLI reports"
 
 # ---- a vault from before the rename ---------------------------------------
 
