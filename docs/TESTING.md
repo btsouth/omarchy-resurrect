@@ -1,7 +1,7 @@
 # Testing ress
 
 Four layers, in the order they catch things. The first three run on any machine
-in about a minute. The fourth needs a VM, and there are exactly six things only
+in a minute or two. The fourth needs a VM, and there are exactly six things only
 it can tell you.
 
 ## 1. The suite
@@ -37,6 +37,12 @@ stripping control characters — and reports any mutation no test caught.
 
 Run it when you change what the tests are *for*, not on every edit. A `SURVIVED`
 line is a feature the suite only appears to cover.
+
+It runs the suite once before breaking anything, and refuses to report on
+mutations when that baseline does not pass: a case that is already red counts as
+a catch for every mutation, so a run on a red suite is a clean sweep over tests
+that are not passing. `tests/cases/20-mutation-baseline.sh` covers both halves of
+that gate.
 
 ## 3. The QML half
 

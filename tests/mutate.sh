@@ -23,6 +23,32 @@ FILTER="${1:-}"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK"
 
+# Visible to the cases: one of them exercises this runner, and left to itself it
+# would run the whole suite once per mutation as well as once for the baseline.
+export RESS_MUTATION_RUN=1
+
+# A mutation is caught when the suite goes red, so a case that is already red
+# makes every mutation below look caught. A clean sweep on a red baseline is
+# worse than no run at all: it is a false claim of coverage, and it is the way a
+# mutation that changes nothing gets believed. So the baseline is checked first.
+printf 'Baseline\n'
+baseline=$(cd "$SRC" && ./tests/run.sh 2>&1)
+if ! grep -q 'cases passed' <<<"$baseline"; then
+  printf '\e[31m  The suite does not pass on its own, so every mutation would look caught.\e[0m\n'
+  # The failing cases, and then the assertions inside them. The case lines carry
+  # colour, so they are matched by shape rather than by column; and the ✗ marker
+  # on its own names nothing, because a case's own output is full of ✗ marks from
+  # the step lines of the tool under test.
+  grep -E '[0-9]+/[0-9]+ assertions failed' <<<"$baseline" |
+    sed -e 's/\x1b\[[0-9;]*m//g' -e 's/^/  /' || true
+  # No trailing space: the word carries colour around it, so "FAIL " never matches.
+  grep -E 'FAIL' <<<"$baseline" | head -20 |
+    sed -e 's/\x1b\[[0-9;]*m//g' -e 's/^/    /' || true
+  printf '  Fix that first: an unrelated failing case is not evidence of anything.\n'
+  exit 1
+fi
+printf '\e[32m  %s\e[0m\n\n' "$(grep 'cases passed' <<<"$baseline")"
+
 survived=0
 caught=0
 skipped=0
