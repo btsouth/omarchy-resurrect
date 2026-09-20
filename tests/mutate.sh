@@ -191,6 +191,16 @@ run_mutation config-no-lock \
   load_config' \
   ':'
 
+# ---- status reads a config it did not write -------------------------------
+
+run_mutation status-json-raw-config \
+  '        --argjson packages "$(json_flag "${CFG[INCLUDE_PACKAGES]:-0}")" \' \
+  '        --argjson packages "${CFG[INCLUDE_PACKAGES]}" \'
+
+run_mutation status-manifest-unchecked \
+  '  if jq -e . "$file" >/dev/null 2>&1; then jq -c . "$file"; else printf '"'"'null'"'"'; fi' \
+  '  cat "$file" 2>/dev/null || printf '"'"'null'"'"''
+
 # ---- the protocol ---------------------------------------------------------
 
 run_mutation porcelain-prose \
