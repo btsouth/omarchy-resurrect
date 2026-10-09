@@ -4,6 +4,14 @@ Newest first. The version here is the one in `manifest.json` and in
 `ress --version`; the plugin id stays `tsouth89.resurrect` whatever the version,
 for the reason in the README.
 
+## 1.2.1
+
+### Fixed
+
+- Colors work again on Qt 6.12. QtQuick now ships its own `Color` type, which hid the
+  shell's `Color` palette and left colors undefined. The plugin reads it as
+  `Commons.Color`, the same change Omarchy made for its own shell.
+
 ## 1.2.0
 
 ### Web apps
